@@ -1,12 +1,12 @@
-# DeiManga Indonesian Manga API
+# Indonesian Manga REST API
 
-A lightweight REST API gateway for Indonesian manga providers, built for DeiManga.
+A lightweight REST API gateway for Indonesian manga providers.
 
 ## Status
 
 | Property | Value |
 | --- | --- |
-| Name | DeiManga Indonesian Manga API |
+| Name | Indonesian Manga REST API |
 | Platform | Vercel |
 | Primary Region | Singapore |
 | Status | Operational |
@@ -130,25 +130,25 @@ Exact fields may vary by provider and endpoint.
 ## Architecture
 
 ```text
-DeiManga Mobile App
-        |
-        v
-DeiManga Backend (Render)
-        |
-        v
-DeiManga Indonesian Manga API (Vercel)
-        |
-   +----+----+----+
-   |         |    |
-   v         v    v
-KomikIndo BacaKomik Komiku
+Client Application / Frontend
+             |
+             v
+   Application Backend
+             |
+             v
+  Manga REST API (Vercel)
+             |
+      +------+------+
+      |      |      |
+      v      v      v
+ KomikIndo BacaKomik Komiku
 ```
 
-The service acts as a provider gateway so the main DeiManga backend does not need to perform heavy provider scraping for every request.
+The service acts as a provider gateway so downstream backends or client applications do not need to perform heavy scraping for every request.
 
 ## Reliability
 
-The main DeiManga backend can prefer this REST API while retaining its existing provider scraper as a fallback.
+Backends consuming this service can use this REST API as a primary provider while retaining a local provider scraper as a fallback.
 
 ```text
 Vercel REST API
@@ -161,7 +161,7 @@ Vercel REST API
       |
     error
       v
-Existing provider scraper
+Fallback / Internal scraper
 ```
 
 ## Supported Provider Matrix
@@ -200,17 +200,17 @@ Production:
 https://deimanga-rest-api.vercel.app
 ```
 
-The service is deployed on Vercel and provides a lightweight regional gateway for DeiManga's Indonesian manga providers.
+The service is deployed on Vercel and provides a lightweight regional gateway for Indonesian manga providers.
 
 ## Intended Usage
 
-This API is primarily an infrastructure component of DeiManga. It is designed to:
+This API is designed to:
 
-1. isolate provider scraping from the main backend
-2. reduce provider-related workload on the main Render service
-3. normalize provider responses into JSON
-4. provide a consistent endpoint structure for multiple providers
-5. allow the main backend to retain fallback scraping for reliability
+1. isolate provider scraping from the main application backend
+2. reduce resource consumption and scraping overhead on primary application services
+3. normalize multiple provider responses into clean, consistent JSON
+4. provide a unified endpoint structure across different sources
+5. facilitate flexible fallback strategies for manga reader apps and web frontends
 
 ## Disclaimer
 
