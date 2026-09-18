@@ -1,7 +1,12 @@
 // ============================================================================
-// DeiManga - Indonesian Manga REST API Microservice (Vercel Serverless)
-// Providers: KomikIndo, BacaKomik, Komiku
+// DeiManga - Indonesian Manga REST API (Vercel Edge Runtime)
+// Region: Singapore (sin1) - Full Browser Fingerprint Emulation
 // ============================================================================
+
+export const config = {
+  runtime: "edge",
+  regions: ["sin1"], // Dekatkan ke Singapore!
+};
 
 const memoryCache = new Map();
 
@@ -23,15 +28,23 @@ function setCached(key, data, ttlSeconds) {
   memoryCache.set(key, { data, expiresAt: Date.now() + ttlSeconds * 1000 });
 }
 
-// ----------------------------------------------------------------------------
-// Utilities & Helpers
-// ----------------------------------------------------------------------------
+// Header lengkap browser Chrome 131 asli untuk melewati Cloudflare Bot Check
 const BROWSER_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Accept":
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
   "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+  "Accept-Encoding": "gzip, deflate, br, zstd",
+  "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"Windows"',
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Sec-Fetch-User": "?1",
+  "Upgrade-Insecure-Requests": "1",
+  "Priority": "u=0, i",
 };
 
 async function fetchHtml(url) {
@@ -85,8 +98,19 @@ function sanitizeCover(url) {
   return clean.replace(/\?.*$/, "");
 }
 
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=UTF-8",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+    },
+  });
+}
+
 // ----------------------------------------------------------------------------
-// 1. KOMIKINDO PROVIDER PARSER
+// PROVIDERS
 // ----------------------------------------------------------------------------
 const KomikIndo = {
   baseUrl: "https://komikindo.ch",
@@ -123,7 +147,6 @@ const KomikIndo = {
   async getDetail(slug) {
     const url = `${this.baseUrl}/komik/${slug}/`;
     const html = await fetchHtml(url);
-
     const titleMatch =
       /<h1 class="entry-title"[^>]*>([^<]+)<\/h1>/i.exec(html) ||
       /<h1[^>]*>([^<]+)<\/h1>/i.exec(html);
@@ -181,7 +204,6 @@ const KomikIndo = {
   async getChapterPages(chapterSlug) {
     const url = `${this.baseUrl}/${chapterSlug}/`;
     const html = await fetchHtml(url);
-
     const containerMatch =
       /<div[^>]*id=["']chimg-auh["'][^>]*>([\s\S]*?)<\/div>/i.exec(html) ||
       /<div[^>]*id=["']Baca_Komik["'][^>]*>([\s\S]*?)<\/div>/i.exec(html) ||
@@ -205,9 +227,6 @@ const KomikIndo = {
   },
 };
 
-// ----------------------------------------------------------------------------
-// 2. BACAKOMIK PROVIDER PARSER
-// ----------------------------------------------------------------------------
 const BacaKomik = {
   baseUrl: "https://bacakomik.my",
 
@@ -242,7 +261,6 @@ const BacaKomik = {
   async getDetail(slug) {
     const url = `${this.baseUrl}/komik/${slug}/`;
     const html = await fetchHtml(url);
-
     const titleMatch =
       /<h1[^>]*class=["']entry-title["'][^>]*>([^<]+)<\/h1>/i.exec(html) ||
       /<h1[^>]*>([^<]+)<\/h1>/i.exec(html);
@@ -317,9 +335,6 @@ const BacaKomik = {
   },
 };
 
-// ----------------------------------------------------------------------------
-// 3. KOMIKU PROVIDER PARSER
-// ----------------------------------------------------------------------------
 const Komiku = {
   baseUrl: "https://komiku.org",
   apiUrl: "https://api.komiku.org",
@@ -420,37 +435,32 @@ const Komiku = {
 };
 
 // ----------------------------------------------------------------------------
-// Main Vercel Serverless Handler
+// Main Vercel Edge Handler
 // ----------------------------------------------------------------------------
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "*");
-
+export default async function handler(req) {
   if (req.method === "OPTIONS") {
-    return res.status(204).end();
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+      },
+    });
   }
 
-  const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
-  const url = new URL(req.url, `https://${host}`);
+  const url = new URL(req.url);
   const path = url.pathname;
 
   // Root / Health check
   if (path === "/" || path === "/health") {
-    return res.status(200).json({
+    return jsonResponse({
       name: "DeiManga Indonesian Manga API",
-      platform: "Vercel Serverless",
+      platform: "Vercel Edge (Singapore)",
       status: "operational",
       uptime: "healthy",
       providers: ["komikindo", "bacakomik", "komiku"],
       timestamp: new Date().toISOString(),
-      routes: [
-        "/api/:provider/search?q=:query",
-        "/api/:provider/manga/:slug",
-        "/api/:provider/chapters/:slug",
-        "/api/:provider/chapter/:chapterSlug",
-        "/:provider/* (Raw HTML Proxy)",
-      ],
     });
   }
 
@@ -463,85 +473,85 @@ export default async function handler(req, res) {
     }
   };
 
-  // 1. API: Search -> /api/:provider/search?q=naruto
+  // 1. API: Search
   const searchMatch = /^\/api\/([^\/]+)\/search$/i.exec(path);
   if (searchMatch) {
     const providerName = searchMatch[1];
     const provider = getProvider(providerName);
-    if (!provider) return res.status(400).json({ error: "Invalid provider" });
+    if (!provider) return jsonResponse({ error: "Invalid provider" }, 400);
 
     const q = url.searchParams.get("q") || "";
-    if (!q) return res.status(200).json({ items: [], total: 0 });
+    if (!q) return jsonResponse({ items: [], total: 0 });
 
     const cacheKey = `search:${providerName}:${q.toLowerCase()}`;
     const cached = getCached(cacheKey);
-    if (cached) return res.status(200).json(cached);
+    if (cached) return jsonResponse(cached);
 
     try {
       const items = await provider.search(q);
       const result = { status: "success", provider: providerName, total: items.length, items };
-      setCached(cacheKey, result, 600); // 10 mins cache
-      return res.status(200).json(result);
+      setCached(cacheKey, result, 600);
+      return jsonResponse(result);
     } catch (err) {
-      return res.status(502).json({ status: "error", message: err.message });
+      return jsonResponse({ status: "error", message: err.message }, 502);
     }
   }
 
-  // 2. API: Detail Manga -> /api/:provider/manga/:slug
+  // 2. API: Detail Manga
   const mangaMatch = /^\/api\/([^\/]+)\/manga\/([^\/]+)$/i.exec(path);
   if (mangaMatch) {
     const providerName = mangaMatch[1];
     const slug = mangaMatch[2];
     const provider = getProvider(providerName);
-    if (!provider) return res.status(400).json({ error: "Invalid provider" });
+    if (!provider) return jsonResponse({ error: "Invalid provider" }, 400);
 
     const cacheKey = `manga:${providerName}:${slug}`;
     const cached = getCached(cacheKey);
-    if (cached) return res.status(200).json(cached);
+    if (cached) return jsonResponse(cached);
 
     try {
       const data = await provider.getDetail(slug);
       const result = { status: "success", provider: providerName, data };
-      setCached(cacheKey, result, 1800); // 30 mins cache
-      return res.status(200).json(result);
+      setCached(cacheKey, result, 1800);
+      return jsonResponse(result);
     } catch (err) {
-      return res.status(502).json({ status: "error", message: err.message });
+      return jsonResponse({ status: "error", message: err.message }, 502);
     }
   }
 
-  // 3. API: Chapter List -> /api/:provider/chapters/:slug
+  // 3. API: Chapters
   const chaptersMatch = /^\/api\/([^\/]+)\/chapters\/([^\/]+)$/i.exec(path);
   if (chaptersMatch) {
     const providerName = chaptersMatch[1];
     const slug = chaptersMatch[2];
     const provider = getProvider(providerName);
-    if (!provider) return res.status(400).json({ error: "Invalid provider" });
+    if (!provider) return jsonResponse({ error: "Invalid provider" }, 400);
 
     const cacheKey = `chapters:${providerName}:${slug}`;
     const cached = getCached(cacheKey);
-    if (cached) return res.status(200).json(cached);
+    if (cached) return jsonResponse(cached);
 
     try {
       const chapters = await provider.getChapters(slug);
       const result = { status: "success", provider: providerName, total: chapters.length, chapters };
-      setCached(cacheKey, result, 900); // 15 mins cache
-      return res.status(200).json(result);
+      setCached(cacheKey, result, 900);
+      return jsonResponse(result);
     } catch (err) {
-      return res.status(502).json({ status: "error", message: err.message });
+      return jsonResponse({ status: "error", message: err.message }, 502);
     }
   }
 
-  // 4. API: Chapter Reader Pages -> /api/:provider/chapter/:chapterSlug
+  // 4. API: Pages
   const pageMatch = /^\/api\/([^\/]+)\/chapter\/([^\/]+)$/i.exec(path);
   if (pageMatch) {
     const providerName = pageMatch[1];
     const chapterSlug = pageMatch[2];
     const provider = getProvider(providerName);
-    if (!provider) return res.status(400).json({ error: "Invalid provider" });
+    if (!provider) return jsonResponse({ error: "Invalid provider" }, 400);
 
     const cacheKey = `pages:${providerName}:${chapterSlug}`;
     const cached = getCached(cacheKey);
-    if (cached) return res.status(200).json(cached);
+    if (cached) return jsonResponse(cached);
 
     try {
       const pages = await provider.getChapterPages(chapterSlug);
@@ -552,14 +562,14 @@ export default async function handler(req, res) {
         pageCount: pages.length,
         pages,
       };
-      setCached(cacheKey, result, 86400); // 24 hours cache
-      return res.status(200).json(result);
+      setCached(cacheKey, result, 86400);
+      return jsonResponse(result);
     } catch (err) {
-      return res.status(502).json({ status: "error", message: err.message });
+      return jsonResponse({ status: "error", message: err.message }, 502);
     }
   }
 
-  // 5. BACKWARD-COMPATIBLE RAW PROXY (Fallback untuk config Render lama)
+  // 5. Fallback raw proxy
   let targetOrigin = "";
   let cleanPath = path;
 
@@ -582,12 +592,17 @@ export default async function handler(req, res) {
         headers: BROWSER_HEADERS,
       });
       const body = await upstream.text();
-      res.setHeader("Content-Type", upstream.headers.get("content-type") || "text/html; charset=UTF-8");
-      return res.status(upstream.status).send(body);
+      return new Response(body, {
+        status: upstream.status,
+        headers: {
+          "Content-Type": upstream.headers.get("content-type") || "text/html; charset=UTF-8",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
     } catch (err) {
-      return res.status(502).send(err.message);
+      return new Response(err.message, { status: 502 });
     }
   }
 
-  return res.status(404).json({ error: "Endpoint not found" });
+  return jsonResponse({ error: "Endpoint not found" }, 404);
 }
