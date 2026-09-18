@@ -1,11 +1,12 @@
 // ============================================================================
-// DeiManga - Indonesian Manga REST API (Vercel Edge Runtime)
-// Region: Singapore (sin1) - Full Browser Fingerprint Emulation
+// DeiManga - Indonesian Manga REST API (Vercel Edge - Singapore)
+// Providers: KomikIndo, BacaKomik, Komiku
+// Features: Search, Detail, Chapters, Reader, Latest, Manhwa, Manhua, Genres
 // ============================================================================
 
 export const config = {
   runtime: "edge",
-  regions: ["sin1"], // Dekatkan ke Singapore!
+  regions: ["sin1"],
 };
 
 const memoryCache = new Map();
@@ -28,7 +29,6 @@ function setCached(key, data, ttlSeconds) {
   memoryCache.set(key, { data, expiresAt: Date.now() + ttlSeconds * 1000 });
 }
 
-// Header lengkap browser Chrome 131 asli untuk melewati Cloudflare Bot Check
 const BROWSER_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -110,14 +110,12 @@ function jsonResponse(data, status = 200) {
 }
 
 // ----------------------------------------------------------------------------
-// PROVIDERS
+// KOMIKINDO PROVIDER
 // ----------------------------------------------------------------------------
 const KomikIndo = {
   baseUrl: "https://komikindo.ch",
 
-  async search(query) {
-    const url = `${this.baseUrl}/?s=${encodeURIComponent(query)}`;
-    const html = await fetchHtml(url);
+  parseListItems(html) {
     const items = [];
     const itemRegex =
       /<div class=["'](?:animepost|list-update_item)["'][^>]*>([\s\S]*?)(?=<div class=["'](?:animepost|list-update_item)["']|<footer|$)/gi;
@@ -131,6 +129,7 @@ const KomikIndo = {
         /<h4[^>]*>([^<]+)<\/h4>/i.exec(block);
       const imgMatch = /<img[^>]+(?:data-src|src)=["']([^"']+)["']/i.exec(block);
       const typeMatch = /class=["']typeflag\s*([^"']+)["']/i.exec(block);
+      const chMatch = /Ch\.\s*([\d.]+)/i.exec(block);
 
       if (hrefMatch && titleMatch) {
         items.push({
@@ -138,10 +137,41 @@ const KomikIndo = {
           title: cleanTitle(titleMatch[1]),
           coverArtUrl: sanitizeCover(imgMatch?.[1]),
           type: typeMatch ? typeMatch[1].toLowerCase() : "manga",
+          latestChapter: chMatch ? `Chapter ${chMatch[1]}` : undefined,
         });
       }
     }
     return items;
+  },
+
+  async search(query) {
+    const url = `${this.baseUrl}/?s=${encodeURIComponent(query)}`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
+  async getLatest(page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/komik-terbaru/` : `${this.baseUrl}/komik-terbaru/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
+  async getManhwa(page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/manhwa/` : `${this.baseUrl}/manhwa/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
+  async getManhua(page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/manhua/` : `${this.baseUrl}/manhua/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
+  async getByGenre(genre, page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/genres/${genre}/` : `${this.baseUrl}/genres/${genre}/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
   },
 
   async getDetail(slug) {
@@ -227,12 +257,13 @@ const KomikIndo = {
   },
 };
 
+// ----------------------------------------------------------------------------
+// BACAKOMIK PROVIDER
+// ----------------------------------------------------------------------------
 const BacaKomik = {
   baseUrl: "https://bacakomik.my",
 
-  async search(query) {
-    const url = `${this.baseUrl}/?s=${encodeURIComponent(query)}`;
-    const html = await fetchHtml(url);
+  parseListItems(html) {
     const items = [];
     const articleRegex =
       /<div class="animposx"[^>]*>([\s\S]*?)(?:<\/div>\s*<\/div>|<\/div>)/gi;
@@ -245,6 +276,7 @@ const BacaKomik = {
         /title=["']([^"']+)["']/i.exec(block) || /<h3[^>]*>([^<]+)<\/h3>/i.exec(block);
       const imgMatch = /src=["']([^"']+)["']/i.exec(block);
       const typeMatch = /class=["']typeflag\s*([^"']+)["']/i.exec(block);
+      const chMatch = /Ch\.\s*([\d.]+)/i.exec(block);
 
       if (hrefMatch && titleMatch) {
         items.push({
@@ -252,10 +284,41 @@ const BacaKomik = {
           title: cleanTitle(titleMatch[1]),
           coverArtUrl: sanitizeCover(imgMatch?.[1]),
           type: typeMatch ? typeMatch[1].toLowerCase() : "manga",
+          latestChapter: chMatch ? `Chapter ${chMatch[1]}` : undefined,
         });
       }
     }
     return items;
+  },
+
+  async search(query) {
+    const url = `${this.baseUrl}/?s=${encodeURIComponent(query)}`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
+  async getLatest(page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/komik-terbaru/` : `${this.baseUrl}/komik-terbaru/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
+  async getManhwa(page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/manhwa/` : `${this.baseUrl}/manhwa/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
+  async getManhua(page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/manhua/` : `${this.baseUrl}/manhua/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
+  async getByGenre(genre, page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/genres/${genre}/` : `${this.baseUrl}/genres/${genre}/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
   },
 
   async getDetail(slug) {
@@ -335,18 +398,14 @@ const BacaKomik = {
   },
 };
 
+// ----------------------------------------------------------------------------
+// KOMIKU PROVIDER
+// ----------------------------------------------------------------------------
 const Komiku = {
   baseUrl: "https://komiku.org",
   apiUrl: "https://api.komiku.org",
 
-  async search(query) {
-    let html = "";
-    try {
-      html = await fetchHtml(`${this.apiUrl}/?post_type=manga&s=${encodeURIComponent(query)}`);
-    } catch {
-      html = await fetchHtml(`${this.baseUrl}/?post_type=manga&s=${encodeURIComponent(query)}`);
-    }
-
+  parseListItems(html) {
     const items = [];
     const chunks = html.split(/<div class=["']bge["'][^>]*>/i).slice(1);
 
@@ -356,6 +415,7 @@ const Komiku = {
         /<h3[^>]*>([^<]+)<\/h3>/i.exec(block) || /title=["']([^"']+)["']/i.exec(block);
       const imgMatch = /src=["']([^"']+)["']/i.exec(block);
       const typeMatch = /class=["']t2\s*([^"']+)["']/i.exec(block);
+      const chMatch = /Chapter\s*([\d.]+)/i.exec(block);
 
       if (hrefMatch && titleMatch) {
         items.push({
@@ -363,16 +423,50 @@ const Komiku = {
           title: cleanTitle(titleMatch[1]),
           coverArtUrl: sanitizeCover(imgMatch?.[1]),
           type: typeMatch ? typeMatch[1].toLowerCase() : "manga",
+          latestChapter: chMatch ? `Chapter ${chMatch[1]}` : undefined,
         });
       }
     }
     return items;
   },
 
+  async search(query) {
+    let html = "";
+    try {
+      html = await fetchHtml(`${this.apiUrl}/?post_type=manga&s=${encodeURIComponent(query)}`);
+    } catch {
+      html = await fetchHtml(`${this.baseUrl}/?post_type=manga&s=${encodeURIComponent(query)}`);
+    }
+    return this.parseListItems(html);
+  },
+
+  async getLatest(page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/komik-terbaru/` : `${this.baseUrl}/komik-terbaru/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
+  async getManhwa(page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/manhwa/` : `${this.baseUrl}/manhwa/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
+  async getManhua(page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/manhua/` : `${this.baseUrl}/manhua/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
+  async getByGenre(genre, page = 1) {
+    const url = page === 1 ? `${this.baseUrl}/genre/${genre}/` : `${this.baseUrl}/genre/${genre}/page/${page}/`;
+    const html = await fetchHtml(url);
+    return this.parseListItems(html);
+  },
+
   async getDetail(slug) {
     const url = `${this.baseUrl}/manga/${slug}/`;
     const html = await fetchHtml(url);
-
     const h1Match = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
     const descMatch = /<p class="desc"[^>]*>([\s\S]*?)<\/p>/i.exec(html);
     const imgMatch = /<img[^>]+class=["'][^"']*cover[^"']*["'][^>]+src=["']([^"']+)["']/i.exec(html);
@@ -434,8 +528,26 @@ const Komiku = {
   },
 };
 
+const GENRES_LIST = [
+  { id: "action", name: "Action" },
+  { id: "adventure", name: "Adventure" },
+  { id: "comedy", name: "Comedy" },
+  { id: "drama", name: "Drama" },
+  { id: "fantasy", name: "Fantasy" },
+  { id: "isekai", name: "Isekai" },
+  { id: "martial-arts", name: "Martial Arts" },
+  { id: "mystery", name: "Mystery" },
+  { id: "romance", name: "Romance" },
+  { id: "school-life", name: "School Life" },
+  { id: "sci-fi", name: "Sci-Fi" },
+  { id: "shounen", name: "Shounen" },
+  { id: "slice-of-life", name: "Slice of Life" },
+  { id: "supernatural", name: "Supernatural" },
+  { id: "thriller", name: "Thriller" },
+];
+
 // ----------------------------------------------------------------------------
-// Main Vercel Edge Handler
+// Main Handler
 // ----------------------------------------------------------------------------
 export default async function handler(req) {
   if (req.method === "OPTIONS") {
@@ -451,8 +563,9 @@ export default async function handler(req) {
 
   const url = new URL(req.url);
   const path = url.pathname;
+  const page = parseInt(url.searchParams.get("page") || "1", 10);
 
-  // Root / Health check
+  // Health / Root
   if (path === "/" || path === "/health") {
     return jsonResponse({
       name: "DeiManga Indonesian Manga API",
@@ -460,6 +573,18 @@ export default async function handler(req) {
       status: "operational",
       uptime: "healthy",
       providers: ["komikindo", "bacakomik", "komiku"],
+      endpoints: [
+        "/api/:provider/search?q=:query",
+        "/api/:provider/latest?page=:page",
+        "/api/:provider/manhwa?page=:page",
+        "/api/:provider/manhua?page=:page",
+        "/api/:provider/genres",
+        "/api/:provider/genres/:genre?page=:page",
+        "/api/:provider/manga/:slug",
+        "/api/:provider/chapters/:slug",
+        "/api/:provider/chapter/:chapterSlug",
+        "/:provider/* (Raw Proxy)",
+      ],
       timestamp: new Date().toISOString(),
     });
   }
@@ -473,7 +598,7 @@ export default async function handler(req) {
     }
   };
 
-  // 1. API: Search
+  // 1. Search -> /api/:provider/search?q=...
   const searchMatch = /^\/api\/([^\/]+)\/search$/i.exec(path);
   if (searchMatch) {
     const providerName = searchMatch[1];
@@ -497,7 +622,98 @@ export default async function handler(req) {
     }
   }
 
-  // 2. API: Detail Manga
+  // 2. Latest Updates -> /api/:provider/latest?page=1
+  const latestMatch = /^\/api\/([^\/]+)\/latest$/i.exec(path);
+  if (latestMatch) {
+    const providerName = latestMatch[1];
+    const provider = getProvider(providerName);
+    if (!provider) return jsonResponse({ error: "Invalid provider" }, 400);
+
+    const cacheKey = `latest:${providerName}:${page}`;
+    const cached = getCached(cacheKey);
+    if (cached) return jsonResponse(cached);
+
+    try {
+      const items = await provider.getLatest(page);
+      const result = { status: "success", provider: providerName, page, total: items.length, items };
+      setCached(cacheKey, result, 300); // 5 mins cache
+      return jsonResponse(result);
+    } catch (err) {
+      return jsonResponse({ status: "error", message: err.message }, 502);
+    }
+  }
+
+  // 3. Manhwa List -> /api/:provider/manhwa?page=1
+  const manhwaMatch = /^\/api\/([^\/]+)\/manhwa$/i.exec(path);
+  if (manhwaMatch) {
+    const providerName = manhwaMatch[1];
+    const provider = getProvider(providerName);
+    if (!provider) return jsonResponse({ error: "Invalid provider" }, 400);
+
+    const cacheKey = `manhwa:${providerName}:${page}`;
+    const cached = getCached(cacheKey);
+    if (cached) return jsonResponse(cached);
+
+    try {
+      const items = await provider.getManhwa(page);
+      const result = { status: "success", provider: providerName, page, total: items.length, items };
+      setCached(cacheKey, result, 600);
+      return jsonResponse(result);
+    } catch (err) {
+      return jsonResponse({ status: "error", message: err.message }, 502);
+    }
+  }
+
+  // 4. Manhua List -> /api/:provider/manhua?page=1
+  const manhuaMatch = /^\/api\/([^\/]+)\/manhua$/i.exec(path);
+  if (manhuaMatch) {
+    const providerName = manhuaMatch[1];
+    const provider = getProvider(providerName);
+    if (!provider) return jsonResponse({ error: "Invalid provider" }, 400);
+
+    const cacheKey = `manhua:${providerName}:${page}`;
+    const cached = getCached(cacheKey);
+    if (cached) return jsonResponse(cached);
+
+    try {
+      const items = await provider.getManhua(page);
+      const result = { status: "success", provider: providerName, page, total: items.length, items };
+      setCached(cacheKey, result, 600);
+      return jsonResponse(result);
+    } catch (err) {
+      return jsonResponse({ status: "error", message: err.message }, 502);
+    }
+  }
+
+  // 5. Genres List -> /api/:provider/genres
+  const genresListMatch = /^\/api\/([^\/]+)\/genres$/i.exec(path);
+  if (genresListMatch) {
+    return jsonResponse({ status: "success", total: GENRES_LIST.length, genres: GENRES_LIST });
+  }
+
+  // 6. Filter by Genre -> /api/:provider/genres/:genre?page=1
+  const genreFilterMatch = /^\/api\/([^\/]+)\/genres\/([^\/]+)$/i.exec(path);
+  if (genreFilterMatch) {
+    const providerName = genreFilterMatch[1];
+    const genre = genreFilterMatch[2];
+    const provider = getProvider(providerName);
+    if (!provider) return jsonResponse({ error: "Invalid provider" }, 400);
+
+    const cacheKey = `genre:${providerName}:${genre}:${page}`;
+    const cached = getCached(cacheKey);
+    if (cached) return jsonResponse(cached);
+
+    try {
+      const items = await provider.getByGenre(genre, page);
+      const result = { status: "success", provider: providerName, genre, page, total: items.length, items };
+      setCached(cacheKey, result, 600);
+      return jsonResponse(result);
+    } catch (err) {
+      return jsonResponse({ status: "error", message: err.message }, 502);
+    }
+  }
+
+  // 7. Manga Detail -> /api/:provider/manga/:slug
   const mangaMatch = /^\/api\/([^\/]+)\/manga\/([^\/]+)$/i.exec(path);
   if (mangaMatch) {
     const providerName = mangaMatch[1];
@@ -519,7 +735,7 @@ export default async function handler(req) {
     }
   }
 
-  // 3. API: Chapters
+  // 8. Chapters -> /api/:provider/chapters/:slug
   const chaptersMatch = /^\/api\/([^\/]+)\/chapters\/([^\/]+)$/i.exec(path);
   if (chaptersMatch) {
     const providerName = chaptersMatch[1];
@@ -541,7 +757,7 @@ export default async function handler(req) {
     }
   }
 
-  // 4. API: Pages
+  // 9. Reader Pages -> /api/:provider/chapter/:chapterSlug
   const pageMatch = /^\/api\/([^\/]+)\/chapter\/([^\/]+)$/i.exec(path);
   if (pageMatch) {
     const providerName = pageMatch[1];
@@ -569,7 +785,7 @@ export default async function handler(req) {
     }
   }
 
-  // 5. Fallback raw proxy
+  // 10. Raw Proxy Fallback (Kompatibel dengan Render env)
   let targetOrigin = "";
   let cleanPath = path;
 
