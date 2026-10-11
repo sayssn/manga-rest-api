@@ -35,7 +35,6 @@ const BROWSER_HEADERS = {
   "Accept":
     "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
   "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-  "Accept-Encoding": "gzip, deflate, br, zstd",
   "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
   "Sec-Ch-Ua-Mobile": "?0",
   "Sec-Ch-Ua-Platform": '"Windows"',
@@ -547,6 +546,713 @@ const GENRES_LIST = [
 ];
 
 // ----------------------------------------------------------------------------
+// ANIME PROVIDERS (Samehadaku, Otakudesu, AnimeIndo)
+// ----------------------------------------------------------------------------
+function cleanAnimeTitle(raw) {
+  if (!raw) return "";
+  return raw
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#8211;/g, "–")
+    .replace(/&#8212;/g, "—")
+    .replace(/&#038;/g, "&")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/^Nonton\s+Anime\s+/i, "")
+    .replace(/^Nonton\s+/i, "")
+    .replace(/\s*\(Episode\s*[\d\s–-]+.*?\)/i, "")
+    .replace(/\s*Episode\s*\d+.*$/i, "")
+    .replace(/\s*Subtitle\s*Indonesia.*$/i, "")
+    .replace(/\s*Sub\s*Indo.*$/i, "")
+    .replace(/\s*\[BATCH\]/i, "")
+    .replace(/\s*\[END\]/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractEpisodeNumber(text, url) {
+  const epMatch =
+    /(?:Episode|Ep\.|Eps\.|Ep)\s*([0-9.]+)/i.exec(text || "") ||
+    /-episode-([0-9.]+)/i.exec(url || "") ||
+    /(\d+(?:\.\d+)?)/.exec(text || "");
+  if (epMatch) return parseFloat(epMatch[1]);
+  return undefined;
+}
+
+// 1. Samehadaku Provider
+const SamehadakuAnime = {
+  baseUrl: "https://v2.samehadaku.how",
+
+  async getLatest(page = 1) {
+    if (page === 1) {
+      try {
+        const text = await fetchHtml(`${this.baseUrl}/wp-json/apk/latest`);
+        const jsonList = JSON.parse(text);
+        if (Array.isArray(jsonList) && jsonList.length > 0) {
+          return jsonList.map((item) => ({
+            sourceId: item.url ? parseSlug(item.url) : String(item.id),
+            title: cleanAnimeTitle(item.series_title || item.title),
+            coverImage: sanitizeCover(item.thumb),
+            latestEpisode: item.episode ? `Episode ${item.episode}` : undefined,
+            type: "TV",
+          }));
+        }
+      } catch {}
+    }
+
+    const url = page > 1 ? `${this.baseUrl}/page/${page}/` : `${this.baseUrl}/`;
+    const html = await fetchHtml(url);
+    const items = [];
+    const itemRegex = /<article class=['"](?:animepost|bs)['"][^>]*>([\s\S]*?)<\/article>/gi;
+    let match;
+    const seen = new Set();
+
+    while ((match = itemRegex.exec(html)) !== null) {
+      const block = match[1];
+      const hrefMatch = /href=['"]([^'"]+)['"]/i.exec(block);
+      const titleMatch = /<h2[^>]*>([^<]+)<\/h2>/i.exec(block) || /title=['"]([^'"]+)['"]/i.exec(block);
+      const imgMatch = /<img[^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(block);
+      const epMatch = /<span class=['"]epx['"][^>]*>([^<]+)<\/span>/i.exec(block);
+
+      if (hrefMatch && titleMatch) {
+        const sId = parseSlug(hrefMatch[1]);
+        if (!seen.has(sId)) {
+          seen.add(sId);
+          items.push({
+            sourceId: sId,
+            title: cleanAnimeTitle(titleMatch[1]),
+            coverImage: sanitizeCover(imgMatch?.[1]),
+            latestEpisode: epMatch ? epMatch[1].trim() : undefined,
+            type: "TV",
+          });
+        }
+      }
+    }
+    return items;
+  },
+
+  async search(query, page = 1) {
+    if (page === 1) {
+      try {
+        const text = await fetchHtml(
+          `${this.baseUrl}/wp-json/wp/v2/anime?search=${encodeURIComponent(query)}&_embed=1`
+        );
+        const jsonList = JSON.parse(text);
+        if (Array.isArray(jsonList) && jsonList.length > 0) {
+          return jsonList.map((item) => ({
+            sourceId: item.slug || String(item.id),
+            title: cleanAnimeTitle(item.title?.rendered || ""),
+            coverImage: sanitizeCover(item._embedded?.["wp:featuredmedia"]?.[0]?.source_url),
+            type: "TV",
+          }));
+        }
+      } catch {}
+    }
+
+    const searchUrl = page > 1
+      ? `${this.baseUrl}/page/${page}/?s=${encodeURIComponent(query)}`
+      : `${this.baseUrl}/?s=${encodeURIComponent(query)}`;
+    const html = await fetchHtml(searchUrl);
+    const items = [];
+    const itemRegex = /<article class=['"](?:animepost|bs)['"][^>]*>([\s\S]*?)<\/article>/gi;
+    let match;
+    const seen = new Set();
+
+    while ((match = itemRegex.exec(html)) !== null) {
+      const block = match[1];
+      const hrefMatch = /href=['"]([^'"]+)['"]/i.exec(block);
+      const titleMatch = /<h2[^>]*>([^<]+)<\/h2>/i.exec(block) || /title=['"]([^'"]+)['"]/i.exec(block);
+      const imgMatch = /<img[^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(block);
+
+      if (hrefMatch && titleMatch && !hrefMatch[1].includes("/batch/")) {
+        const sId = parseSlug(hrefMatch[1]);
+        if (!seen.has(sId)) {
+          seen.add(sId);
+          items.push({
+            sourceId: sId,
+            title: cleanAnimeTitle(titleMatch[1]),
+            coverImage: sanitizeCover(imgMatch?.[1]),
+            type: "TV",
+          });
+        }
+      }
+    }
+    return items;
+  },
+
+  async getDetail(slug) {
+    const url = slug.startsWith("http") ? slug : `${this.baseUrl}/anime/${slug}/`;
+    const html = await fetchHtml(url);
+
+    const titleMatch =
+      /<h1[^>]*itemprop=['"]headline['"][^>]*>([^<]+)<\/h1>/i.exec(html) ||
+      /<h1 class=['"]entry-title['"][^>]*>([^<]+)<\/h1>/i.exec(html) ||
+      /<h1[^>]*>([^<]+)<\/h1>/i.exec(html);
+
+    const imgMatch =
+      /<img[^>]+class=['"][^'"]*object-cover[^'"]*['"][^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(html) ||
+      /<div class=['"]content-thumb['"][^>]*>[\s\S]*?<img[^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(html) ||
+      /<img[^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(html);
+
+    const synopsisMatch =
+      /<p class=['"]leading-relaxed['"][^>]*>([\s\S]*?)<\/p>/i.exec(html) ||
+      /<div class=['"]entry-content['"][^>]*>([\s\S]*?)<\/div>/i.exec(html);
+
+    const ratingMatch = /Score\s*:\s*([0-9.]+)|Rating\s*:\s*([0-9.]+)/i.exec(html);
+    const yearMatch = /\b(19\d\d|20\d\d)\b/.exec(html);
+
+    // Genres
+    const genres = [];
+    const genreRegex = /<a[^>]+href=['"][^'"]*\/genre\/[^'"]+['"][^>]*>([^<]+)<\/a>/gi;
+    let gMatch;
+    while ((gMatch = genreRegex.exec(html)) !== null) {
+      const g = gMatch[1].trim();
+      if (g && !genres.includes(g)) genres.push(g);
+    }
+
+    // Episodes
+    const episodes = [];
+    const epRegex = /<a\s+[^>]*href=['"](https?:\/\/[^'"]+-episode-[^'"]+)['"][^>]*>([\s\S]*?)<\/a>/gi;
+    let epMatch;
+    const seenEpUrls = new Set();
+
+    while ((epMatch = epRegex.exec(html)) !== null) {
+      const epUrl = epMatch[1];
+      if (seenEpUrls.has(epUrl) || epUrl.includes("/batch/")) continue;
+      seenEpUrls.add(epUrl);
+
+      const rawLabel = epMatch[2].replace(/<[^>]+>/g, "").trim();
+      const num = extractEpisodeNumber(rawLabel, epUrl);
+      episodes.push({
+        episodeNumber: num,
+        episodeLabel: num ? `Episode ${num}` : rawLabel || "Episode",
+        providerEpisodeUrl: epUrl,
+      });
+    }
+
+    episodes.sort((a, b) => (a.episodeNumber || 0) - (b.episodeNumber || 0));
+
+    return {
+      sourceId: parseSlug(slug),
+      provider: "samehadaku",
+      title: titleMatch ? cleanAnimeTitle(titleMatch[1]) : parseSlug(slug),
+      synopsis: synopsisMatch ? synopsisMatch[1].replace(/<[^>]+>/g, "").trim() : undefined,
+      coverImage: sanitizeCover(imgMatch?.[1]),
+      status: /ongoing/i.test(html) ? "Ongoing" : "Completed",
+      type: "TV",
+      rating: ratingMatch ? parseFloat(ratingMatch[1] || ratingMatch[2]) : undefined,
+      releaseYear: yearMatch ? parseInt(yearMatch[1], 10) : undefined,
+      genres,
+      episodes,
+    };
+  },
+
+  async getEpisodeStreams(slugOrUrl) {
+    const url = slugOrUrl.startsWith("http") ? slugOrUrl : `${this.baseUrl}/${slugOrUrl}/`;
+    const html = await fetchHtml(url);
+    const streams = [];
+
+    // 1. Parse download mirrors (.download-eps ul li) for direct Pixeldrain, Filedon, Vidhide
+    const liRegex = /<li>\s*<strong>([^<]+)<\/strong>([\s\S]*?)<\/li>/gi;
+    let liMatch;
+
+    while ((liMatch = liRegex.exec(html)) !== null) {
+      const qText = liMatch[1].toLowerCase();
+      let quality = "720p";
+      if (qText.includes("1080") || qText.includes("fullhd")) quality = "1080p";
+      else if (qText.includes("720") || qText.includes("mp4hd")) quality = "720p";
+      else if (qText.includes("480")) quality = "480p";
+      else if (qText.includes("360")) quality = "360p";
+
+      const block = liMatch[2];
+      const linkRegex = /<a\s+[^>]*href=['"]([^'"]+)['"][^>]*>([^<]+)<\/a>/gi;
+      let aMatch;
+
+      while ((aMatch = linkRegex.exec(block)) !== null) {
+        const href = aMatch[1];
+        const anchorName = aMatch[2].trim().toLowerCase();
+
+        // Pixeldrain direct MP4 stream (unthrottled!)
+        if (href.includes("pixeldrain.com/u/") || anchorName.includes("pixeldrain")) {
+          const fileId = href.split("/u/")[1]?.split(/[?#]/)[0];
+          if (fileId) {
+            streams.push({
+              server: `Pixeldrain ${quality.toUpperCase()} (Direct)`,
+              type: "mp4",
+              url: `https://pixeldrain.com/api/file/${fileId}`,
+              quality,
+              isEmbed: false,
+              headers: {
+                Referer: `${this.baseUrl}/`,
+                "User-Agent": BROWSER_HEADERS["User-Agent"],
+              },
+            });
+          }
+        }
+        // Vidhide client HLS
+        else if (href.includes("vidhide") || href.includes("peytonepre") || anchorName.includes("vidhide")) {
+          streams.push({
+            server: `Vidhide ${quality.toUpperCase()} (HLS)`,
+            type: "m3u8",
+            url: href,
+            quality,
+            isEmbed: true,
+            headers: {
+              Referer: "https://vidhidepro.com/",
+              "User-Agent": BROWSER_HEADERS["User-Agent"],
+            },
+          });
+        }
+        // Filedon direct / mirror
+        else if (href.includes("filedon") || anchorName.includes("filedon")) {
+          streams.push({
+            server: `Filedon ${quality.toUpperCase()} (Direct)`,
+            type: "mp4",
+            url: href,
+            quality,
+            isEmbed: false,
+            headers: {
+              Referer: "https://filedon.co/",
+              "User-Agent": BROWSER_HEADERS["User-Agent"],
+            },
+          });
+        }
+      }
+    }
+
+    // 2. Parse player options (.east_player_option data-embed)
+    const optRegex = /class=['"][^'"]*east_player_option[^'"]*['"][^>]*data-embed=['"]([^'"]+)['"]/gi;
+    let optMatch;
+    while ((optMatch = optRegex.exec(html)) !== null) {
+      const rawEmbed = optMatch[1]
+        .replace(/&quot;/g, '"')
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&");
+
+      const iframeMatch = /src=["']([^"']+)["']/i.exec(rawEmbed);
+      if (iframeMatch) {
+        const playerSrc = iframeMatch[1];
+        if (playerSrc.includes(".mp4")) {
+          streams.push({
+            server: "Samehadaku Direct (MP4)",
+            type: "mp4",
+            url: playerSrc,
+            quality: "720p",
+            isEmbed: false,
+            headers: {
+              Referer: `${this.baseUrl}/`,
+              "User-Agent": BROWSER_HEADERS["User-Agent"],
+            },
+          });
+        } else if (playerSrc.includes("blogger.com/video.g")) {
+          streams.push({
+            server: "Blogspot (Direct)",
+            type: "embed",
+            url: playerSrc,
+            quality: "720p",
+            isEmbed: true,
+          });
+        }
+      }
+    }
+
+    return streams;
+  },
+
+  async getFeed() {
+    const items = await this.getLatest(1);
+    return {
+      featured: items.slice(0, 5),
+      latestEpisodes: items,
+      ongoing: items,
+      popular: items.slice(0, 10),
+    };
+  },
+};
+
+// 2. Otakudesu Provider
+const OtakudesuAnime = {
+  baseUrl: "https://otakudesu.blog",
+
+  async getLatest(page = 1) {
+    const url = page > 1 ? `${this.baseUrl}/ongoing-anime/page/${page}/` : `${this.baseUrl}/ongoing-anime/`;
+    const html = await fetchHtml(url);
+    const items = [];
+    const itemRegex = /<li[^>]*>[\s\S]*?<div class=['"]detpost['"]>([\s\S]*?)<\/li>/gi;
+    let match;
+
+    while ((match = itemRegex.exec(html)) !== null) {
+      const block = match[1];
+      const hrefMatch = /href=['"]([^'"]+)['"]/i.exec(block);
+      const titleMatch = /<h2 class=['"]jdlflm['"][^>]*>([^<]+)<\/h2>/i.exec(block);
+      const imgMatch = /<img[^>]+src=['"]([^'"]+)['"]/i.exec(block);
+      const epMatch = /<div class=['"]epz['"][^>]*>([\s\S]*?)<\/div>/i.exec(block);
+
+      if (hrefMatch && titleMatch) {
+        const epClean = epMatch ? epMatch[1].replace(/<[^>]+>/g, "").trim() : undefined;
+        items.push({
+          sourceId: parseSlug(hrefMatch[1]),
+          title: cleanAnimeTitle(titleMatch[1]),
+          coverImage: sanitizeCover(imgMatch?.[1]),
+          latestEpisode: epClean,
+          type: "TV",
+        });
+      }
+    }
+    return items;
+  },
+
+  async search(query) {
+    const url = `${this.baseUrl}/?s=${encodeURIComponent(query)}&post_type=anime`;
+    const html = await fetchHtml(url);
+    const items = [];
+    const chivMatch = /<ul class=['"]chivsrc['"][^>]*>([\s\S]*?)<\/ul>/i.exec(html);
+    if (!chivMatch) return items;
+
+    const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gi;
+    let match;
+    while ((match = liRegex.exec(chivMatch[1])) !== null) {
+      const block = match[1];
+      const hrefMatch = /<h2[^>]*><a[^>]+href=['"]([^'"]+)['"][^>]*>([^<]+)<\/a>/i.exec(block);
+      const imgMatch = /<img[^>]+src=['"]([^'"]+)['"]/i.exec(block);
+      const statusMatch = /<b>Status<\/b>\s*:\s*([^<]+)/i.exec(block);
+      const ratingMatch = /<b>Rating<\/b>\s*:\s*([0-9.]+)/i.exec(block);
+
+      if (hrefMatch) {
+        items.push({
+          sourceId: parseSlug(hrefMatch[1]),
+          title: cleanAnimeTitle(hrefMatch[2]),
+          coverImage: sanitizeCover(imgMatch?.[1]),
+          rating: ratingMatch ? parseFloat(ratingMatch[1]) : undefined,
+          status: statusMatch ? statusMatch[1].trim() : "Ongoing",
+          type: "TV",
+        });
+      }
+    }
+    return items;
+  },
+
+  async getDetail(slug) {
+    const url = `${this.baseUrl}/anime/${slug}/`;
+    const html = await fetchHtml(url);
+
+    const titleMatch = /<b>Judul<\/b>:\s*([^<]+)/i.exec(html);
+    const japMatch = /<b>Japanese<\/b>:\s*([^<]+)/i.exec(html);
+    const statusMatch = /<b>Status<\/b>:\s*([^<]+)/i.exec(html);
+    const ratingMatch = /<b>Skor<\/b>:\s*([0-9.]+)/i.exec(html) || /<b>Rating<\/b>:\s*([0-9.]+)/i.exec(html);
+    const imgMatch = /<div class=['"]fotoanime['"][^>]*>[\s\S]*?<img[^>]+src=['"]([^'"]+)['"]/i.exec(html);
+    const synopsisMatch = /<div class=['"]sinopc['"][^>]*>([\s\S]*?)<\/div>/i.exec(html);
+
+    // Genres
+    const genres = [];
+    const genreRegex = /<a[^>]+href=['"]https:\/\/otakudesu\.blog\/genres\/[^'"]+['"][^>]*>([^<]+)<\/a>/gi;
+    let gMatch;
+    while ((gMatch = genreRegex.exec(html)) !== null) {
+      const g = gMatch[1].trim();
+      if (g && !genres.includes(g)) genres.push(g);
+    }
+
+    // Episodes
+    const episodes = [];
+    const epRegex = /<a[^>]+href=['"](https:\/\/otakudesu\.blog\/episode\/[^'"]+)['"][^>]*>([^<]+)<\/a>/gi;
+    let epMatch;
+    const seenEpUrls = new Set();
+    while ((epMatch = epRegex.exec(html)) !== null) {
+      const epUrl = epMatch[1];
+      if (seenEpUrls.has(epUrl)) continue;
+      seenEpUrls.add(epUrl);
+      const epText = epMatch[2].trim();
+      const num = extractEpisodeNumber(epText, epUrl);
+      episodes.push({
+        episodeNumber: num,
+        episodeLabel: num ? `Episode ${num}` : epText,
+        providerEpisodeUrl: epUrl,
+      });
+    }
+
+    episodes.sort((a, b) => (a.episodeNumber || 0) - (b.episodeNumber || 0));
+
+    return {
+      sourceId: slug,
+      provider: "otakudesu",
+      title: titleMatch ? cleanAnimeTitle(titleMatch[1]) : slug,
+      japaneseTitle: japMatch ? japMatch[1].trim() : undefined,
+      synopsis: synopsisMatch ? synopsisMatch[1].replace(/<[^>]+>/g, "").trim() : undefined,
+      coverImage: sanitizeCover(imgMatch?.[1]),
+      status: statusMatch ? statusMatch[1].trim() : "Ongoing",
+      type: "TV",
+      rating: ratingMatch ? parseFloat(ratingMatch[1]) : undefined,
+      genres,
+      episodes,
+    };
+  },
+
+  async getEpisodeStreams(slugOrUrl) {
+    const url = slugOrUrl.startsWith("http") ? slugOrUrl : `${this.baseUrl}/episode/${slugOrUrl}/`;
+    const html = await fetchHtml(url);
+    const streams = [];
+
+    // Parse download mirrors (Pdrain, Filedon, etc.)
+    const liRegex = /<li><strong>([^<]+)<\/strong>([\s\S]*?)<\/li>/gi;
+    let liMatch;
+    while ((liMatch = liRegex.exec(html)) !== null) {
+      const qText = liMatch[1].toLowerCase();
+      let quality = "720p";
+      if (qText.includes("1080")) quality = "1080p";
+      else if (qText.includes("720")) quality = "720p";
+      else if (qText.includes("480")) quality = "480p";
+      else if (qText.includes("360")) quality = "360p";
+
+      const block = liMatch[2];
+      const linkRegex = /<a\s+[^>]*href=['"]([^'"]+)['"][^>]*>([^<]+)<\/a>/gi;
+      let aMatch;
+      while ((aMatch = linkRegex.exec(block)) !== null) {
+        const href = aMatch[1];
+        const name = aMatch[2].trim().toLowerCase();
+
+        if (name.includes("pdrain") || href.includes("pixeldrain")) {
+          streams.push({
+            server: `Pixeldrain ${quality.toUpperCase()}`,
+            type: "mp4",
+            url: href,
+            quality,
+            isEmbed: false,
+            headers: {
+              Referer: `${this.baseUrl}/`,
+              "User-Agent": BROWSER_HEADERS["User-Agent"],
+            },
+          });
+        } else if (name.includes("filedon") || href.includes("filedon")) {
+          streams.push({
+            server: `Filedon ${quality.toUpperCase()} (Direct)`,
+            type: "mp4",
+            url: href,
+            quality,
+            isEmbed: false,
+            headers: {
+              Referer: "https://filedon.co/",
+              "User-Agent": BROWSER_HEADERS["User-Agent"],
+            },
+          });
+        }
+      }
+    }
+
+    // Parse default iframe fallback
+    const iframeMatch = /<iframe[^>]+src=['"]([^'"]+)['"]/i.exec(html);
+    if (iframeMatch && !streams.some((s) => s.url === iframeMatch[1])) {
+      streams.push({
+        server: "Default Stream (Embed)",
+        type: "embed",
+        url: iframeMatch[1],
+        isEmbed: true,
+        headers: {
+          Referer: `${this.baseUrl}/`,
+          "User-Agent": BROWSER_HEADERS["User-Agent"],
+        },
+      });
+    }
+
+    return streams;
+  },
+
+  async getFeed() {
+    const items = await this.getLatest(1);
+    return {
+      featured: items.slice(0, 5),
+      latestEpisodes: items,
+      ongoing: items,
+      popular: items.slice(0, 10),
+    };
+  },
+};
+
+// 3. AnimeIndo Provider
+const AnimeIndoAnime = {
+  baseUrl: "https://animeindo.me",
+
+  async getLatest(page = 1) {
+    const url = page > 1 ? `${this.baseUrl}/page/${page}/` : `${this.baseUrl}/`;
+    const html = await fetchHtml(url);
+    const items = [];
+    const itemRegex = /<article class=['"]bs['"][^>]*>([\s\S]*?)<\/article>/gi;
+    let match;
+
+    while ((match = itemRegex.exec(html)) !== null) {
+      const block = match[1];
+      const hrefMatch = /href=['"]([^'"]+)['"]/i.exec(block);
+      const titleMatch = /<h2[^>]*>([^<]+)<\/h2>/i.exec(block) || /title=['"]([^'"]+)['"]/i.exec(block);
+      const imgMatch = /data-src=['"]([^'"]+)['"]/i.exec(block) || /src=['"]([^'"]+)['"]/i.exec(block);
+      const epMatch = /<span class=['"]epx['"][^>]*>([^<]+)<\/span>/i.exec(block);
+
+      if (hrefMatch && titleMatch) {
+        items.push({
+          sourceId: parseSlug(hrefMatch[1])
+            .replace(/-episode-\d+.*$/i, "")
+            .replace(/-(?:sub-indo|subtitle-indonesia)$/i, ""),
+          title: cleanAnimeTitle(titleMatch[1]),
+          coverImage: sanitizeCover(imgMatch?.[1]),
+          latestEpisode: epMatch ? epMatch[1].trim() : undefined,
+          type: "TV",
+        });
+      }
+    }
+    return items;
+  },
+
+  async search(query) {
+    const url = `${this.baseUrl}/?s=${encodeURIComponent(query)}`;
+    const html = await fetchHtml(url);
+    const items = [];
+    const itemRegex = /<article class=['"]bs['"][^>]*>([\s\S]*?)<\/article>/gi;
+    let match;
+
+    while ((match = itemRegex.exec(html)) !== null) {
+      const block = match[1];
+      const hrefMatch = /href=['"]([^'"]+)['"]/i.exec(block);
+      const titleMatch = /<h2[^>]*>([^<]+)<\/h2>/i.exec(block) || /title=['"]([^'"]+)['"]/i.exec(block);
+      const imgMatch = /data-src=['"]([^'"]+)['"]/i.exec(block) || /src=['"]([^'"]+)['"]/i.exec(block);
+
+      if (hrefMatch && titleMatch) {
+        items.push({
+          sourceId: parseSlug(hrefMatch[1])
+            .replace(/-episode-\d+.*$/i, "")
+            .replace(/-(?:sub-indo|subtitle-indonesia)$/i, ""),
+          title: cleanAnimeTitle(titleMatch[1]),
+          coverImage: sanitizeCover(imgMatch?.[1]),
+          type: "TV",
+          status: "Ongoing",
+        });
+      }
+    }
+    return items;
+  },
+
+  async getDetail(slug) {
+    const url = `${this.baseUrl}/anime/${slug}/`;
+    const html = await fetchHtml(url);
+
+    const titleMatch =
+      /<h1 class=['"]entry-title['"][^>]*>([^<]+)<\/h1>/i.exec(html) ||
+      /<h2 itemprop=['"]partOfSeries['"][^>]*>([^<]+)<\/h2>/i.exec(html);
+    const imgMatch = /<div class=['"]thumb['"][^>]*>[\s\S]*?<img[^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(html);
+    const synopsisMatch =
+      /<div class=['"]desc mindes['"][^>]*>([\s\S]*?)<\/div>/i.exec(html) ||
+      /<div class=['"]entry-content['"][^>]*>([\s\S]*?)<\/div>/i.exec(html);
+    const ratingMatch = /<strong>Rating\s*([0-9.]+)<\/strong>/i.exec(html);
+    const statusMatch = /<b>Status:<\/b>\s*([^<]+)/i.exec(html);
+
+    // Genres
+    const genres = [];
+    const genreRegex = /<a[^>]+href=['"]https:\/\/animeindo\.me\/genres\/[^'"]+['"][^>]*>([^<]+)<\/a>/gi;
+    let gMatch;
+    while ((gMatch = genreRegex.exec(html)) !== null) {
+      const g = gMatch[1].trim();
+      if (g && !genres.includes(g)) genres.push(g);
+    }
+
+    // Episodes from eplister
+    const episodes = [];
+    const eplisterBlock = html.split(/class=['"]eplister['"]/i)[1]?.split(/<\/ul>/i)[0] || "";
+    const epRegex = /<li[^>]*>[\s\S]*?<a[^>]+href=['"]([^'"]+)['"][^>]*>[\s\S]*?<div class=['"]epl-num['"][^>]*>([^<]+)<\/div>[\s\S]*?<div class=['"]epl-title['"][^>]*>([^<]+)<\/div>[\s\S]*?<\/li>/gi;
+    let epMatch;
+
+    while ((epMatch = epRegex.exec(eplisterBlock)) !== null) {
+      const epUrl = epMatch[1];
+      const epNumStr = epMatch[2].trim();
+      const num = extractEpisodeNumber(epNumStr, epUrl);
+      episodes.push({
+        episodeNumber: num,
+        episodeLabel: `Episode ${num || epNumStr}`,
+        providerEpisodeUrl: epUrl,
+      });
+    }
+
+    episodes.sort((a, b) => (a.episodeNumber || 0) - (b.episodeNumber || 0));
+
+    return {
+      sourceId: slug,
+      provider: "animeindo",
+      title: titleMatch ? cleanAnimeTitle(titleMatch[1]) : slug,
+      synopsis: synopsisMatch ? synopsisMatch[1].replace(/<[^>]+>/g, "").trim() : undefined,
+      coverImage: sanitizeCover(imgMatch?.[1]),
+      status: statusMatch ? statusMatch[1].trim() : "Ongoing",
+      type: "TV",
+      rating: ratingMatch ? parseFloat(ratingMatch[1]) : undefined,
+      genres,
+      episodes,
+    };
+  },
+
+  async getEpisodeStreams(slugOrUrl) {
+    const url = slugOrUrl.startsWith("http") ? slugOrUrl : `${this.baseUrl}/${slugOrUrl}/`;
+    const html = await fetchHtml(url);
+    const streams = [];
+
+    // Parse select.mirror base64 options
+    const optRegex = /<option[^>]+value=['"]([^'"]+)['"][^>]*>([\s\S]*?)<\/option>/gi;
+    let match;
+    while ((match = optRegex.exec(html)) !== null) {
+      const val = match[1];
+      const label = match[2].trim();
+      if (!val || val === "") continue;
+
+      try {
+        const decoded = Buffer.from(val, "base64").toString("utf-8");
+        const srcMatch = /src=['"]([^'"]+)['"]/i.exec(decoded);
+        if (srcMatch) {
+          const streamUrl = srcMatch[1].trim();
+          const qMatch = /(1080p|720p|480p|360p)/i.exec(label);
+          const quality = qMatch ? qMatch[1].toLowerCase() : "720p";
+
+          if (streamUrl.includes("vidhide") || streamUrl.includes("peytonepre")) {
+            streams.push({
+              server: `Vidhide ${quality.toUpperCase()}`,
+              type: "m3u8",
+              url: streamUrl,
+              quality,
+              isEmbed: true,
+              headers: {
+                Referer: "https://vidhidepro.com/",
+                "User-Agent": BROWSER_HEADERS["User-Agent"],
+              },
+            });
+          } else if (streamUrl.includes("blogger.com/video.g")) {
+            streams.push({
+              server: `Blogspot ${quality.toUpperCase()}`,
+              type: "embed",
+              url: streamUrl,
+              quality,
+              isEmbed: true,
+            });
+          } else if (streamUrl.includes("mega.nz")) {
+            streams.push({
+              server: `Mega ${quality.toUpperCase()}`,
+              type: "embed",
+              url: streamUrl,
+              quality,
+              isEmbed: true,
+            });
+          }
+        }
+      } catch {}
+    }
+
+    return streams;
+  },
+
+  async getFeed() {
+    const items = await this.getLatest(1);
+    return {
+      featured: items.slice(0, 5),
+      latestEpisodes: items,
+      ongoing: items,
+      popular: items.slice(0, 10),
+    };
+  },
+};
+
+// ----------------------------------------------------------------------------
 // Main Handler
 // ----------------------------------------------------------------------------
 export default async function handler(req) {
@@ -568,11 +1274,12 @@ export default async function handler(req) {
   // Health / Root
   if (path === "/" || path === "/health") {
     return jsonResponse({
-      name: "DeiManga Indonesian Manga API",
+      name: "DeiManga REST API (Manga & Anime)",
       platform: "Vercel Edge (Singapore)",
       status: "operational",
       uptime: "healthy",
-      providers: ["komikindo", "bacakomik", "komiku"],
+      manga_providers: ["komikindo", "bacakomik", "komiku"],
+      anime_providers: ["samehadaku", "otakudesu", "animeindo"],
       endpoints: [
         "/api/:provider/search?q=:query",
         "/api/:provider/latest?page=:page",
@@ -583,12 +1290,156 @@ export default async function handler(req) {
         "/api/:provider/manga/:slug",
         "/api/:provider/chapters/:slug",
         "/api/:provider/chapter/:chapterSlug",
+        "/api/anime/:provider/search?q=:query",
+        "/api/anime/:provider/latest?page=:page",
+        "/api/anime/:provider/detail/:slug",
+        "/api/anime/:provider/episode/:slug",
+        "/api/anime/:provider/feed",
         "/:provider/* (Raw Proxy)",
       ],
       timestamp: new Date().toISOString(),
     });
   }
 
+  // ==========================================================================
+  // ANIME API ROUTES (/api/anime/:provider/...)
+  // ==========================================================================
+  if (path.startsWith("/api/anime/")) {
+    const getAnimeProvider = (name) => {
+      switch (name?.toLowerCase()) {
+        case "samehadaku": return SamehadakuAnime;
+        case "otakudesu": return OtakudesuAnime;
+        case "animeindo": return AnimeIndoAnime;
+        default: return null;
+      }
+    };
+
+    // A1. Anime Latest -> /api/anime/:provider/latest?page=1
+    const animeLatestMatch = /^\/api\/anime\/([^\/]+)\/latest$/i.exec(path);
+    if (animeLatestMatch) {
+      const providerName = animeLatestMatch[1];
+      const provider = getAnimeProvider(providerName);
+      if (!provider) return jsonResponse({ error: "Invalid anime provider" }, 400);
+
+      const cacheKey = `anime:latest:${providerName}:${page}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const items = await provider.getLatest(page);
+        const result = { status: "success", provider: providerName, page, total: items.length, items };
+        setCached(cacheKey, result, 300);
+        return jsonResponse(result);
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // A2. Anime Feed -> /api/anime/:provider/feed
+    const animeFeedMatch = /^\/api\/anime\/([^\/]+)\/feed$/i.exec(path);
+    if (animeFeedMatch) {
+      const providerName = animeFeedMatch[1];
+      const provider = getAnimeProvider(providerName);
+      if (!provider) return jsonResponse({ error: "Invalid anime provider" }, 400);
+
+      const cacheKey = `anime:feed:${providerName}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const feed = await provider.getFeed();
+        const result = { status: "success", provider: providerName, ...feed };
+        setCached(cacheKey, result, 300);
+        return jsonResponse(result);
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // A3. Anime Search -> /api/anime/:provider/search?q=...
+    const animeSearchMatch = /^\/api\/anime\/([^\/]+)\/search$/i.exec(path);
+    if (animeSearchMatch) {
+      const providerName = animeSearchMatch[1];
+      const provider = getAnimeProvider(providerName);
+      if (!provider) return jsonResponse({ error: "Invalid anime provider" }, 400);
+
+      const q = url.searchParams.get("q") || "";
+      if (!q) return jsonResponse({ items: [], total: 0 });
+
+      const cacheKey = `anime:search:${providerName}:${q.toLowerCase()}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const items = await provider.search(q, page);
+        const result = { status: "success", provider: providerName, total: items.length, items };
+        setCached(cacheKey, result, 600);
+        return jsonResponse(result);
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // A4. Anime Detail -> /api/anime/:provider/detail/:slug
+    const animeDetailMatch = /^\/api\/anime\/([^\/]+)\/detail\/([^\/]+)$/i.exec(path);
+    if (animeDetailMatch) {
+      const providerName = animeDetailMatch[1];
+      const slug = animeDetailMatch[2];
+      const provider = getAnimeProvider(providerName);
+      if (!provider) return jsonResponse({ error: "Invalid anime provider" }, 400);
+
+      const cacheKey = `anime:detail:${providerName}:${slug}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const data = await provider.getDetail(slug);
+        const result = { status: "success", provider: providerName, data };
+        setCached(cacheKey, result, 1800);
+        return jsonResponse(result);
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // A5. Anime Episode Streams -> /api/anime/:provider/episode/:slug (or ?url=...)
+    const animeEpisodeMatch = /^\/api\/anime\/([^\/]+)\/episode\/?(.*)$/i.exec(path);
+    if (animeEpisodeMatch) {
+      const providerName = animeEpisodeMatch[1];
+      let slug = animeEpisodeMatch[2];
+      const targetUrl = url.searchParams.get("url") || "";
+      const episodeTarget = targetUrl || slug;
+      if (!episodeTarget) return jsonResponse({ error: "Missing episode slug or url" }, 400);
+
+      const provider = getAnimeProvider(providerName);
+      if (!provider) return jsonResponse({ error: "Invalid anime provider" }, 400);
+
+      const cacheKey = `anime:episode:${providerName}:${episodeTarget}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const streams = await provider.getEpisodeStreams(episodeTarget);
+        const result = {
+          status: "success",
+          provider: providerName,
+          episode: episodeTarget,
+          total: streams.length,
+          streams,
+        };
+        setCached(cacheKey, result, 1800);
+        return jsonResponse(result);
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    return jsonResponse({ error: "Anime endpoint not found" }, 404);
+  }
+
+  // ==========================================================================
+  // MANGA API ROUTES (/api/:provider/...)
+  // ==========================================================================
   const getProvider = (name) => {
     switch (name?.toLowerCase()) {
       case "komikindo": return KomikIndo;
