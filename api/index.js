@@ -778,75 +778,87 @@ const SamehadakuAnime = {
     const html = await fetchHtml(url);
     const streams = [];
 
-    // 1. Parse download mirrors (.download-eps ul li) for direct Pixeldrain, Filedon, Vidhide
-    const liRegex = /<li>\s*<strong>([^<]+)<\/strong>([\s\S]*?)<\/li>/gi;
-    let liMatch;
+    // 1. Scope to MP4 .download-eps blocks first (skip [MKV] and [x265] blocks whose Pixeldrain files are .mkv or 404)
+    const downloadBlocks = html.split(/<div class=['"]download-eps['"][^>]*>/i).slice(1);
+    const mp4Blocks = downloadBlocks.filter((b) => {
+      const header = /<p>\s*<b>([^<]+)<\/b>\s*<\/p>/i.exec(b)?.[1] || "";
+      return /mp4/i.test(header) && !/mkv|x265/i.test(header);
+    });
+    const targetBlocks = mp4Blocks.length > 0 ? mp4Blocks : downloadBlocks;
 
-    while ((liMatch = liRegex.exec(html)) !== null) {
-      const qText = liMatch[1].toLowerCase();
-      let quality = "720p";
-      if (qText.includes("1080") || qText.includes("fullhd")) quality = "1080p";
-      else if (qText.includes("720") || qText.includes("mp4hd")) quality = "720p";
-      else if (qText.includes("480")) quality = "480p";
-      else if (qText.includes("360")) quality = "360p";
+    for (const dBlock of targetBlocks) {
+      const liRegex = /<li>\s*<strong>([^<]+)<\/strong>([\s\S]*?)<\/li>/gi;
+      let liMatch;
 
-      const block = liMatch[2];
-      const linkRegex = /<a\s+[^>]*href=['"]([^'"]+)['"][^>]*>([^<]+)<\/a>/gi;
-      let aMatch;
+      while ((liMatch = liRegex.exec(dBlock)) !== null) {
+        const qText = liMatch[1].toLowerCase();
+        if (qText.includes("mkv") || qText.includes("x265")) continue;
 
-      while ((aMatch = linkRegex.exec(block)) !== null) {
-        const href = aMatch[1];
-        const anchorName = aMatch[2].trim().toLowerCase();
+        let quality = "720p";
+        if (qText.includes("1080") || qText.includes("fullhd")) quality = "1080p";
+        else if (qText.includes("720") || qText.includes("mp4hd")) quality = "720p";
+        else if (qText.includes("480")) quality = "480p";
+        else if (qText.includes("360")) quality = "360p";
 
-        // Pixeldrain direct MP4 stream (unthrottled!)
-        if (href.includes("pixeldrain.com/u/") || anchorName.includes("pixeldrain")) {
-          const fileId = href.split("/u/")[1]?.split(/[?#]/)[0];
-          if (fileId) {
+        const block = liMatch[2];
+        const linkRegex = /<a\s+[^>]*href=['"]([^'"]+)['"][^>]*>([^<]+)<\/a>/gi;
+        let aMatch;
+
+        while ((aMatch = linkRegex.exec(block)) !== null) {
+          const href = aMatch[1];
+          const anchorName = aMatch[2].trim().toLowerCase();
+
+          // Pixeldrain direct MP4 stream (from MP4 block only)
+          if (href.includes("pixeldrain.com/u/") || anchorName.includes("pixeldrain")) {
+            const fileId = href.split("/u/")[1]?.split(/[?#]/)[0];
+            if (fileId) {
+              streams.push({
+                server: `Samehadaku • Pixeldrain ${quality.toUpperCase()} (Direct)`,
+                type: "mp4",
+                url: `https://pixeldrain.com/api/file/${fileId}`,
+                quality,
+                isEmbed: false,
+                headers: {
+                  Referer: `${this.baseUrl}/`,
+                  "User-Agent": BROWSER_HEADERS["User-Agent"],
+                },
+              });
+            }
+          }
+          // Filedon client-resolvable Cloudflare R2 / S3 MP4 (MUST be isEmbed: true so client unpacks view URL)
+          else if (href.includes("filedon") || anchorName.includes("filedon")) {
             streams.push({
-              server: `Pixeldrain ${quality.toUpperCase()} (Direct)`,
+              server: `Samehadaku • Filedon ${quality.toUpperCase()}`,
               type: "mp4",
-              url: `https://pixeldrain.com/api/file/${fileId}`,
+              url: href,
               quality,
-              isEmbed: false,
+              isEmbed: true,
               headers: {
-                Referer: `${this.baseUrl}/`,
+                Referer: "https://filedon.co/",
+                "User-Agent": BROWSER_HEADERS["User-Agent"],
+              },
+            });
+          }
+          // Vidhide client HLS
+          else if (href.includes("vidhide") || href.includes("peytonepre") || anchorName.includes("vidhide")) {
+            streams.push({
+              server: `Samehadaku • Vidhide ${quality.toUpperCase()} (HLS)`,
+              type: "m3u8",
+              url: href,
+              quality,
+              isEmbed: true,
+              headers: {
+                Referer: "https://vidhidepro.com/",
                 "User-Agent": BROWSER_HEADERS["User-Agent"],
               },
             });
           }
         }
-        // Vidhide client HLS
-        else if (href.includes("vidhide") || href.includes("peytonepre") || anchorName.includes("vidhide")) {
-          streams.push({
-            server: `Vidhide ${quality.toUpperCase()} (HLS)`,
-            type: "m3u8",
-            url: href,
-            quality,
-            isEmbed: true,
-            headers: {
-              Referer: "https://vidhidepro.com/",
-              "User-Agent": BROWSER_HEADERS["User-Agent"],
-            },
-          });
-        }
-        // Filedon direct / mirror
-        else if (href.includes("filedon") || anchorName.includes("filedon")) {
-          streams.push({
-            server: `Filedon ${quality.toUpperCase()} (Direct)`,
-            type: "mp4",
-            url: href,
-            quality,
-            isEmbed: false,
-            headers: {
-              Referer: "https://filedon.co/",
-              "User-Agent": BROWSER_HEADERS["User-Agent"],
-            },
-          });
-        }
       }
     }
 
-    // 2. Parse player options (.east_player_option data-embed)
+    // 2. Parse player options (.east_player_option data-embed) for Blogger fallback only
+    // (Skip s0.wibufile.com direct .mp4 because it is dead/timing out upstream)
     const optRegex = /class=['"][^'"]*east_player_option[^'"]*['"][^>]*data-embed=['"]([^'"]+)['"]/gi;
     let optMatch;
     while ((optMatch = optRegex.exec(html)) !== null) {
@@ -859,21 +871,9 @@ const SamehadakuAnime = {
       const iframeMatch = /src=["']([^"']+)["']/i.exec(rawEmbed);
       if (iframeMatch) {
         const playerSrc = iframeMatch[1];
-        if (playerSrc.includes(".mp4")) {
+        if (playerSrc.includes("blogger.com/video.g")) {
           streams.push({
-            server: "Samehadaku Direct (MP4)",
-            type: "mp4",
-            url: playerSrc,
-            quality: "720p",
-            isEmbed: false,
-            headers: {
-              Referer: `${this.baseUrl}/`,
-              "User-Agent": BROWSER_HEADERS["User-Agent"],
-            },
-          });
-        } else if (playerSrc.includes("blogger.com/video.g")) {
-          streams.push({
-            server: "Blogspot (Direct)",
+            server: "Samehadaku • Blogspot",
             type: "embed",
             url: playerSrc,
             quality: "720p",
@@ -1026,13 +1026,15 @@ const OtakudesuAnime = {
     const html = await fetchHtml(url);
     const streams = [];
 
-    // Parse download mirrors (Pdrain, Filedon, etc.)
+    // Parse download mirrors (Pdrain, Filedon, Vidhide - MP4 only, skip MKV)
     const liRegex = /<li><strong>([^<]+)<\/strong>([\s\S]*?)<\/li>/gi;
     let liMatch;
-    const pdrainResolutions = [];
+    const resolutionTasks = [];
 
     while ((liMatch = liRegex.exec(html)) !== null) {
       const qText = liMatch[1].toLowerCase();
+      if (qText.includes("mkv")) continue;
+
       let quality = "720p";
       if (qText.includes("1080")) quality = "1080p";
       else if (qText.includes("720")) quality = "720p";
@@ -1046,7 +1048,8 @@ const OtakudesuAnime = {
         const href = aMatch[1];
         const name = aMatch[2].trim().toLowerCase();
 
-        if (name.includes("pdrain") || href.includes("pixeldrain") || href.includes("link.desustream")) {
+        // Only match actual PDrain / Pixeldrain mirrors (NOT generic link.desustream links for OtakuFiles/Mega/Kraken!)
+        if (name.includes("pdrain") || name.includes("pixeldrain") || href.includes("pixeldrain")) {
           const directPdrain = href.includes("pixeldrain.com/u/")
             ? href.replace("/u/", "/api/file/")
             : href.includes("pixeldrain.com/api/file/")
@@ -1055,7 +1058,7 @@ const OtakudesuAnime = {
 
           if (directPdrain) {
             streams.push({
-              server: `Pixeldrain ${quality.toUpperCase()} (Direct)`,
+              server: `Otakudesu • Pixeldrain ${quality.toUpperCase()} (Direct)`,
               type: "mp4",
               url: directPdrain,
               quality,
@@ -1066,7 +1069,7 @@ const OtakudesuAnime = {
               },
             });
           } else {
-            pdrainResolutions.push(
+            resolutionTasks.push(
               (async () => {
                 try {
                   const resText = await fetchHtml(href);
@@ -1075,7 +1078,7 @@ const OtakudesuAnime = {
                     resText.match(/pixeldrain\.com\/(?:u|api\/file)\/([A-Za-z0-9]+)/);
                   if (idMatch) {
                     return {
-                      server: `Pixeldrain ${quality.toUpperCase()} (Direct)`,
+                      server: `Otakudesu • Pixeldrain ${quality.toUpperCase()} (Direct)`,
                       type: "mp4",
                       url: `https://pixeldrain.com/api/file/${idMatch[1]}`,
                       quality,
@@ -1087,58 +1090,98 @@ const OtakudesuAnime = {
                     };
                   }
                 } catch {}
-                return {
-                  server: `Pixeldrain ${quality.toUpperCase()}`,
-                  type: "embed",
-                  url: href,
-                  quality,
-                  isEmbed: true,
-                  headers: {
-                    Referer: `${this.baseUrl}/`,
-                    "User-Agent": BROWSER_HEADERS["User-Agent"],
-                  },
-                };
+                return null;
               })()
             );
           }
         } else if (name.includes("filedon") || href.includes("filedon")) {
-          streams.push({
-            server: `Filedon ${quality.toUpperCase()} (Direct)`,
-            type: "mp4",
-            url: href,
-            quality,
-            isEmbed: false,
-            headers: {
-              Referer: "https://filedon.co/",
-              "User-Agent": BROWSER_HEADERS["User-Agent"],
-            },
-          });
+          if (href.includes("filedon.co")) {
+            streams.push({
+              server: `Otakudesu • Filedon ${quality.toUpperCase()}`,
+              type: "mp4",
+              url: href,
+              quality,
+              isEmbed: true,
+              headers: {
+                Referer: "https://filedon.co/",
+                "User-Agent": BROWSER_HEADERS["User-Agent"],
+              },
+            });
+          } else {
+            resolutionTasks.push(
+              (async () => {
+                try {
+                  const resText = await fetchHtml(href);
+                  const fMatch = resText.match(/https?:\/\/filedon\.co\/view\/[A-Za-z0-9_-]+/i);
+                  if (fMatch) {
+                    return {
+                      server: `Otakudesu • Filedon ${quality.toUpperCase()}`,
+                      type: "mp4",
+                      url: fMatch[0],
+                      quality,
+                      isEmbed: true,
+                      headers: {
+                        Referer: "https://filedon.co/",
+                        "User-Agent": BROWSER_HEADERS["User-Agent"],
+                      },
+                    };
+                  }
+                } catch {}
+                return null;
+              })()
+            );
+          }
+        } else if (name.includes("vidhide") || name.includes("odvidhide") || href.includes("vidhide")) {
+          if (href.includes("vidhide") || href.includes("peytonepre")) {
+            streams.push({
+              server: `Otakudesu • Vidhide ${quality.toUpperCase()} (HLS)`,
+              type: "m3u8",
+              url: href,
+              quality,
+              isEmbed: true,
+              headers: {
+                Referer: "https://vidhidepro.com/",
+                "User-Agent": BROWSER_HEADERS["User-Agent"],
+              },
+            });
+          } else {
+            resolutionTasks.push(
+              (async () => {
+                try {
+                  const res = await fetch(href, {
+                    headers: BROWSER_HEADERS,
+                    redirect: "follow",
+                  });
+                  const finalUrl = res.url || "";
+                  if (finalUrl.includes("vidhide") || finalUrl.includes("peytonepre") || finalUrl.includes("odvidhide")) {
+                    return {
+                      server: `Otakudesu • Vidhide ${quality.toUpperCase()} (HLS)`,
+                      type: "m3u8",
+                      url: finalUrl,
+                      quality,
+                      isEmbed: true,
+                      headers: {
+                        Referer: "https://vidhidepro.com/",
+                        "User-Agent": BROWSER_HEADERS["User-Agent"],
+                      },
+                    };
+                  }
+                } catch {}
+                return null;
+              })()
+            );
+          }
         }
       }
     }
 
-    if (pdrainResolutions.length > 0) {
-      const resolved = await Promise.allSettled(pdrainResolutions);
+    if (resolutionTasks.length > 0) {
+      const resolved = await Promise.allSettled(resolutionTasks);
       for (const r of resolved) {
         if (r.status === "fulfilled" && r.value) {
           streams.push(r.value);
         }
       }
-    }
-
-    // Parse default iframe fallback
-    const iframeMatch = /<iframe[^>]+src=['"]([^'"]+)['"]/i.exec(html);
-    if (iframeMatch && !streams.some((s) => s.url === iframeMatch[1])) {
-      streams.push({
-        server: "Default Stream (Embed)",
-        type: "embed",
-        url: iframeMatch[1],
-        isEmbed: true,
-        headers: {
-          Referer: `${this.baseUrl}/`,
-          "User-Agent": BROWSER_HEADERS["User-Agent"],
-        },
-      });
     }
 
     return streams;
@@ -1155,6 +1198,60 @@ const OtakudesuAnime = {
   },
 };
 
+function isNsfwAnimeItem(title, sourceId) {
+  return (
+    /\b(?:hentai|ecchi|guilty[\s\-_]*hole|ingoku[\s\-_]*danchi|ero|oppai|jav|r-?18|uncensored|hitozuma|nukitashi)\b/i.test(
+      title || ""
+    ) ||
+    /(?:-|^)(?:hentai|ecchi|guilty-hole|ingoku-danchi|ero|oppai|jav|r-?18|uncensored|hitozuma|nukitashi)(?:-|$)/i.test(
+      sourceId || ""
+    )
+  );
+}
+
+function parseAnimeIndoArticles(htmlBlock) {
+  const items = [];
+  const seen = new Set();
+  const itemRegex = /<article class=['"]bs['"][^>]*>([\s\S]*?)<\/article>/gi;
+  let match;
+
+  while ((match = itemRegex.exec(htmlBlock)) !== null) {
+    const block = match[1];
+    const hrefMatch = /href=['"]([^'"]+)['"]/i.exec(block);
+    const ttMatch = /<div class=['"]tt['"][^>]*>\s*([^<]+)/i.exec(block);
+    const h2Match = /<h2[^>]*>([^<]+)<\/h2>/i.exec(block) || /title=['"]([^'"]+)['"]/i.exec(block);
+    const imgMatch = /data-src=['"]([^'"]+)['"]/i.exec(block) || /src=['"]([^'"]+)['"]/i.exec(block);
+    const epMatch = /<span class=['"]epx['"][^>]*>([^<]+)<\/span>/i.exec(block);
+
+    const rawTitle = (ttMatch && ttMatch[1].trim()) || (h2Match && h2Match[1].trim()) || "";
+    if (hrefMatch && rawTitle) {
+      const sourceId = parseSlug(hrefMatch[1])
+        .replace(/-episode-\d+.*$/i, "")
+        .replace(/-(?:sub-indo|subtitle-indonesia)$/i, "");
+      const title = cleanAnimeTitle(rawTitle);
+      if (!sourceId || seen.has(sourceId) || isNsfwAnimeItem(title, sourceId)) continue;
+      seen.add(sourceId);
+
+      const rawEp = epMatch ? epMatch[1].replace(/^ep\s*/i, "").trim() : undefined;
+      const latestEpisode = rawEp
+        ? /^\d/.test(rawEp)
+          ? `Episode ${rawEp}`
+          : rawEp
+        : undefined;
+
+      items.push({
+        sourceId,
+        title,
+        coverImage: sanitizeCover(imgMatch?.[1]),
+        latestEpisode,
+        type: "TV",
+        status: "Ongoing",
+      });
+    }
+  }
+  return items;
+}
+
 // 3. AnimeIndo Provider
 const AnimeIndoAnime = {
   baseUrl: "https://animeindo.me",
@@ -1162,63 +1259,34 @@ const AnimeIndoAnime = {
   async getLatest(page = 1) {
     const url = page > 1 ? `${this.baseUrl}/page/${page}/` : `${this.baseUrl}/`;
     const html = await fetchHtml(url);
-    const items = [];
-    const itemRegex = /<article class=['"]bs['"][^>]*>([\s\S]*?)<\/article>/gi;
-    let match;
 
-    while ((match = itemRegex.exec(html)) !== null) {
-      const block = match[1];
-      const hrefMatch = /href=['"]([^'"]+)['"]/i.exec(block);
-      const titleMatch = /<h2[^>]*>([^<]+)<\/h2>/i.exec(block) || /title=['"]([^'"]+)['"]/i.exec(block);
-      const imgMatch = /data-src=['"]([^'"]+)['"]/i.exec(block) || /src=['"]([^'"]+)['"]/i.exec(block);
-      const epMatch = /<span class=['"]epx['"][^>]*>([^<]+)<\/span>/i.exec(block);
-
-      if (hrefMatch && titleMatch) {
-        items.push({
-          sourceId: parseSlug(hrefMatch[1])
-            .replace(/-episode-\d+.*$/i, "")
-            .replace(/-(?:sub-indo|subtitle-indonesia)$/i, ""),
-          title: cleanAnimeTitle(titleMatch[1]),
-          coverImage: sanitizeCover(imgMatch?.[1]),
-          latestEpisode: epMatch ? epMatch[1].trim() : undefined,
-          type: "TV",
-        });
+    // Strictly target the "Latest Release" .bixbox section so "Popular Today" (2025/old items) do not pollute Latest Updates
+    const bixboxes = html.split(/<div class=['"]bixbox[^'"]*['"][^>]*>/i).slice(1);
+    for (const box of bixboxes) {
+      const heading = /<h[23][^>]*>([\s\S]*?)<\/h[23]>/i.exec(box)?.[1]?.replace(/<[^>]+>/g, "").trim() || "";
+      if (/latest/i.test(heading)) {
+        const latest = parseAnimeIndoArticles(box);
+        if (latest.length > 0) return latest;
       }
     }
-    return items;
+
+    return parseAnimeIndoArticles(html);
   },
 
   async search(query) {
     const url = `${this.baseUrl}/?s=${encodeURIComponent(query)}`;
     const html = await fetchHtml(url);
-    const items = [];
-    const itemRegex = /<article class=['"]bs['"][^>]*>([\s\S]*?)<\/article>/gi;
-    let match;
-
-    while ((match = itemRegex.exec(html)) !== null) {
-      const block = match[1];
-      const hrefMatch = /href=['"]([^'"]+)['"]/i.exec(block);
-      const titleMatch = /<h2[^>]*>([^<]+)<\/h2>/i.exec(block) || /title=['"]([^'"]+)['"]/i.exec(block);
-      const imgMatch = /data-src=['"]([^'"]+)['"]/i.exec(block) || /src=['"]([^'"]+)['"]/i.exec(block);
-
-      if (hrefMatch && titleMatch) {
-        items.push({
-          sourceId: parseSlug(hrefMatch[1])
-            .replace(/-episode-\d+.*$/i, "")
-            .replace(/-(?:sub-indo|subtitle-indonesia)$/i, ""),
-          title: cleanAnimeTitle(titleMatch[1]),
-          coverImage: sanitizeCover(imgMatch?.[1]),
-          type: "TV",
-          status: "Ongoing",
-        });
-      }
-    }
-    return items;
+    return parseAnimeIndoArticles(html);
   },
 
   async getDetail(slug) {
     const url = `${this.baseUrl}/anime/${slug}/`;
-    const html = await fetchHtml(url);
+    let html = "";
+    try {
+      html = await fetchHtml(url);
+    } catch {
+      html = "";
+    }
 
     const titleMatch =
       /<h1 class=['"]entry-title['"][^>]*>([^<]+)<\/h1>/i.exec(html) ||
@@ -1264,14 +1332,57 @@ const AnimeIndoAnime = {
       });
     }
 
+    // Self-Healing Fallback if /anime/{slug}/ returned 403 WAF or 0 episodes: probe episode 1 page directly
+    let fallbackTitle = "";
+    let fallbackCover = "";
+    let fallbackSynopsis = "";
+    if (episodes.length === 0) {
+      for (const epProbeUrl of [
+        `${this.baseUrl}/${slug}-episode-1-sub-indo/`,
+        `${this.baseUrl}/${slug}-episode-1/`,
+      ]) {
+        try {
+          const epHtml = await fetchHtml(epProbeUrl);
+          const epListBlock = epHtml.split(/class=['"]episodelist['"]/i)[1]?.split(/<\/ul>/i)[0] || "";
+          const liMatches = epListBlock.match(/<li[^>]*>[\s\S]*?<\/li>/gi) || [];
+          for (const li of liMatches) {
+            const hMatch = /<a[^>]+href=['"]([^'"]+)['"]/i.exec(li);
+            const tMatch = /<span class=['"]playinfo['"][^>]*>[\s\S]*?<h3>([^<]+)<\/h3>/i.exec(li);
+            const dMatch = /<span>([^<]+)<\/span>\s*<\/span>/i.exec(li);
+            if (!hMatch) continue;
+            const epUrl = hMatch[1];
+            const labelStr = tMatch ? tMatch[1].trim() : "";
+            const num = extractEpisodeNumber(labelStr, epUrl);
+            const rawDate = dMatch ? dMatch[1].replace(/^Eps\s*\d+\s*-\s*/i, "").trim() : undefined;
+            episodes.push({
+              episodeNumber: num,
+              episodeLabel: `Episode ${num || episodes.length + 1}`,
+              providerEpisodeUrl: epUrl,
+              releaseDate: rawDate || undefined,
+            });
+          }
+          if (episodes.length > 0) {
+            const fTitle = /<h2 itemprop=['"]partOfSeries['"][^>]*>([^<]+)<\/h2>/i.exec(epHtml) ||
+              /<h1 class=['"]entry-title['"][^>]*>([^<]+)<\/h1>/i.exec(epHtml);
+            if (fTitle) fallbackTitle = cleanAnimeTitle(fTitle[1]);
+            const fImg = /<div class=['"]thumb['"][^>]*>[\s\S]*?<img[^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(epHtml);
+            if (fImg) fallbackCover = fImg[1];
+            const fSyn = /<div class=['"]desc['"][^>]*>([\s\S]*?)<\/div>/i.exec(epHtml);
+            if (fSyn) fallbackSynopsis = fSyn[1].replace(/<[^>]+>/g, "").trim();
+            break;
+          }
+        } catch {}
+      }
+    }
+
     episodes.sort((a, b) => (a.episodeNumber || 0) - (b.episodeNumber || 0));
 
     return {
       sourceId: slug,
       provider: "animeindo",
-      title: titleMatch ? cleanAnimeTitle(titleMatch[1]) : slug,
-      synopsis: synopsisMatch ? synopsisMatch[1].replace(/<[^>]+>/g, "").trim() : undefined,
-      coverImage: sanitizeCover(imgMatch?.[1]),
+      title: titleMatch ? cleanAnimeTitle(titleMatch[1]) : fallbackTitle || slug,
+      synopsis: synopsisMatch ? synopsisMatch[1].replace(/<[^>]+>/g, "").trim() : fallbackSynopsis || undefined,
+      coverImage: sanitizeCover(imgMatch?.[1] || fallbackCover),
       status: statusMatch ? statusMatch[1].trim() : "Ongoing",
       type: "TV",
       rating: ratingMatch ? parseFloat(ratingMatch[1]) : undefined,
@@ -1303,7 +1414,7 @@ const AnimeIndoAnime = {
 
           if (streamUrl.includes("vidhide") || streamUrl.includes("peytonepre")) {
             streams.push({
-              server: `Vidhide ${quality.toUpperCase()}`,
+              server: `AnimeIndo • Vidhide ${quality.toUpperCase()}`,
               type: "m3u8",
               url: streamUrl,
               quality,
@@ -1315,7 +1426,7 @@ const AnimeIndoAnime = {
             });
           } else if (streamUrl.includes("filedon.co")) {
             streams.push({
-              server: `Filedon ${quality.toUpperCase()}`,
+              server: `AnimeIndo • Filedon ${quality.toUpperCase()}`,
               type: "mp4",
               url: streamUrl,
               quality,
@@ -1328,7 +1439,7 @@ const AnimeIndoAnime = {
           } else if (streamUrl.includes(".mp4") || streamUrl.includes(".m3u8")) {
             const isM3u8 = streamUrl.includes(".m3u8");
             streams.push({
-              server: `${label || "Direct"} ${quality.toUpperCase()}`.trim(),
+              server: `AnimeIndo • ${label || "Direct"} ${quality.toUpperCase()}`.trim(),
               type: isM3u8 ? "m3u8" : "mp4",
               url: streamUrl,
               quality,
@@ -1340,15 +1451,7 @@ const AnimeIndoAnime = {
             });
           } else if (streamUrl.includes("blogger.com/video.g")) {
             streams.push({
-              server: `Blogspot ${quality.toUpperCase()}`,
-              type: "embed",
-              url: streamUrl,
-              quality,
-              isEmbed: true,
-            });
-          } else if (streamUrl.includes("mega.nz")) {
-            streams.push({
-              server: `Mega ${quality.toUpperCase()}`,
+              server: `AnimeIndo • Blogspot ${quality.toUpperCase()}`,
               type: "embed",
               url: streamUrl,
               quality,
@@ -1363,12 +1466,83 @@ const AnimeIndoAnime = {
   },
 
   async getFeed() {
-    const items = await this.getLatest(1);
+    const [homeHtml, popHtml, updateHtml] = await Promise.all([
+      fetchHtml(`${this.baseUrl}/`).catch(() => ""),
+      fetchHtml(`${this.baseUrl}/anime/?order=popular`).catch(() => ""),
+      fetchHtml(`${this.baseUrl}/anime/?order=update`).catch(() => ""),
+    ]);
+
+    let latestEpisodes = [];
+    let recommendations = [];
+    let popularToday = [];
+
+    const bixboxes = homeHtml.split(/<div class=['"]bixbox[^'"]*['"][^>]*>/i).slice(1);
+    for (const box of bixboxes) {
+      const heading = /<h[23][^>]*>([\s\S]*?)<\/h[23]>/i.exec(box)?.[1]?.replace(/<[^>]+>/g, "").trim() || "";
+      if (/latest/i.test(heading)) {
+        latestEpisodes = parseAnimeIndoArticles(box);
+      } else if (/recommend/i.test(heading)) {
+        recommendations = parseAnimeIndoArticles(box);
+      } else if (/popular/i.test(heading)) {
+        popularToday = parseAnimeIndoArticles(box);
+      }
+    }
+
+    if (latestEpisodes.length === 0) {
+      latestEpisodes = parseAnimeIndoArticles(homeHtml);
+    }
+
+    const popularList = parseAnimeIndoArticles(popHtml);
+    const updateList = parseAnimeIndoArticles(updateHtml);
+
+    // Canonicalize sourceIds using /anime/?order=update and recommendations
+    const normTitle = (t) => (t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const canonicalMap = new Map();
+    for (const item of [...updateList, ...recommendations, ...popularList]) {
+      canonicalMap.set(normTitle(item.title), item.sourceId);
+    }
+    for (const item of latestEpisodes) {
+      const canonicalSlug = canonicalMap.get(normTitle(item.title));
+      if (canonicalSlug) {
+        item.sourceId = canonicalSlug;
+      } else if (item.sourceId.includes("%")) {
+        try {
+          item.sourceId = decodeURIComponent(item.sourceId)
+            .replace(/[^a-z0-9-]+/gi, "-")
+            .replace(/-+/g, "-")
+            .replace(/^-|-$/g, "")
+            .toLowerCase();
+        } catch {}
+      }
+    }
+
+    // Build Featured Carousel WITHOUT duplicating the top 6 items shown in Latest Updates
+    const topLatestKeys = new Set(
+      latestEpisodes.slice(0, 6).flatMap((x) => [x.sourceId, normTitle(x.title)])
+    );
+    const featuredCandidates = [
+      ...updateList.slice(6),
+      ...recommendations,
+      ...popularToday,
+      ...popularList.slice(0, 6),
+    ];
+    const featured = [];
+    const seenFeatured = new Set();
+    for (const item of featuredCandidates) {
+      const titleKey = normTitle(item.title);
+      if (topLatestKeys.has(item.sourceId) || topLatestKeys.has(titleKey)) continue;
+      if (seenFeatured.has(item.sourceId) || seenFeatured.has(titleKey)) continue;
+      seenFeatured.add(item.sourceId);
+      seenFeatured.add(titleKey);
+      featured.push(item);
+      if (featured.length >= 8) break;
+    }
+
     return {
-      featured: items.slice(0, 5),
-      latestEpisodes: items,
-      ongoing: items,
-      popular: items.slice(0, 10),
+      featured: featured.length >= 5 ? featured : recommendations.slice(0, 8),
+      latestEpisodes,
+      ongoing: updateList.length >= 5 ? updateList.slice(0, 15) : latestEpisodes,
+      popular: popularList.length >= 5 ? popularList.slice(0, 10) : popularToday,
     };
   },
 };
