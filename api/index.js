@@ -97,6 +97,79 @@ function sanitizeCover(url) {
   return clean.replace(/\?.*$/, "");
 }
 
+const ID_MONTHS = {
+  januari: 0, jan: 0,
+  februari: 1, feb: 1,
+  maret: 2, mar: 2,
+  april: 3, apr: 3,
+  mei: 4, may: 4,
+  juni: 5, jun: 5,
+  juli: 6, jul: 6,
+  agustus: 7, ags: 7, agu: 7, aug: 7,
+  september: 8, sep: 8,
+  oktober: 9, okt: 9, oct: 9,
+  november: 10, nov: 10,
+  desember: 11, des: 11, dec: 11,
+};
+
+function parseDateToIso(rawDate) {
+  if (!rawDate) return undefined;
+  const clean = String(rawDate)
+    .replace(/<[^>]+>/g, "")
+    .replace(/^(?:dirilis|updated|rilis|release|published|date)\s*[:\-]?\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return undefined;
+
+  if (/^\d{4}-\d{2}-\d{2}/.test(clean)) {
+    const d = new Date(clean);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+
+  const lower = clean.toLowerCase();
+  const relMatch = /(\d+)\s*(detik|menit|jam|hari|minggu|bulan|tahun|sec|min|hour|day|week|month|year)s?(?:\s+yang)?(?:\s+lalu|\s+ago)?/i.exec(lower);
+  if (relMatch) {
+    const amount = parseInt(relMatch[1], 10);
+    if (Number.isFinite(amount)) {
+      const now = new Date();
+      const unit = relMatch[2].toLowerCase();
+      if (unit.startsWith("minggu") || unit.startsWith("week")) now.setDate(now.getDate() - amount * 7);
+      else if (unit.startsWith("detik") || unit.startsWith("sec")) now.setSeconds(now.getSeconds() - amount);
+      else if (unit.startsWith("menit") || unit.startsWith("min")) now.setMinutes(now.getMinutes() - amount);
+      else if (unit.startsWith("jam") || unit.startsWith("hour")) now.setHours(now.getHours() - amount);
+      else if (unit.startsWith("hari") || unit.startsWith("day")) now.setDate(now.getDate() - amount);
+      else if (unit.startsWith("bulan") || unit.startsWith("month")) now.setMonth(now.getMonth() - amount);
+      else if (unit.startsWith("tahun") || unit.startsWith("year")) now.setFullYear(now.getFullYear() - amount);
+      return now.toISOString();
+    }
+  }
+
+  const slashMatch = /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/.exec(clean);
+  if (slashMatch) {
+    const day = parseInt(slashMatch[1], 10);
+    const month = parseInt(slashMatch[2], 10);
+    const year = parseInt(slashMatch[3], 10);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const d = new Date(Date.UTC(year, month - 1, day));
+      if (!isNaN(d.getTime())) return d.toISOString();
+    }
+  }
+
+  const dayMonthYearMatch = /^(\d{1,2})[\s\-]+([a-zA-Z]+)[\s\-]+(\d{4})$/.exec(clean);
+  if (dayMonthYearMatch) {
+    const day = parseInt(dayMonthYearMatch[1], 10);
+    const mStr = dayMonthYearMatch[2].toLowerCase();
+    const year = parseInt(dayMonthYearMatch[3], 10);
+    const month = ID_MONTHS[mStr];
+    if (month !== undefined && day >= 1 && day <= 31) {
+      const d = new Date(Date.UTC(year, month, day));
+      if (!isNaN(d.getTime())) return d.toISOString();
+    }
+  }
+
+  return undefined;
+}
+
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
@@ -219,10 +292,14 @@ const KomikIndo = {
       const rawText = aMatch[2].replace(/<[^>]+>/g, "").trim();
       const num = parseNumber(rawText, chSlug);
 
+      const dateMatch = /class=["'](?:dt|date)["'][^>]*>([\s\S]*?)<\/span>/i.exec(liHtml);
+      const publishedAt = parseDateToIso(dateMatch?.[1]);
+
       chapters.push({
         id: chSlug,
         number: num,
         title: rawText || `Chapter ${num}`,
+        ...(publishedAt ? { publishedAt } : {}),
       });
     }
 
@@ -342,22 +419,27 @@ const BacaKomik = {
     const url = `${this.baseUrl}/komik/${slug}/`;
     const html = await fetchHtml(url);
     const chapters = [];
-    const chRegex = /<li[^>]*data-id=["']?[^"'>]*["']?[^>]*>([\s\S]*?)<\/li>/gi;
+    const chRegex = /<li[^>]*>\s*(?:<span[^>]*>\s*)?<a href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>([\s\S]{0,300}?)(?:<\/li>|<li|$)/gi;
     let match;
 
     while ((match = chRegex.exec(html)) !== null) {
-      const block = match[1];
-      const aMatch = /<a href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i.exec(block);
-      if (!aMatch) continue;
-
-      const chSlug = parseSlug(aMatch[1]);
-      const rawText = aMatch[2].replace(/<[^>]+>/g, "").trim();
+      const aUrl = match[1];
+      const chSlug = parseSlug(aUrl);
+      const rawText = match[2].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
       const num = parseNumber(rawText, chSlug);
+      if (!num && !/chapter\s*0/i.test(rawText) && !/ch\.\s*0/i.test(rawText)) continue;
+
+      const rest = match[3] || "";
+      const dateMatch = /class=["']dt["'][^>]*>([\s\S]{0,120}?)<\/span>/i.exec(rest);
+      const publishedAt = parseDateToIso(dateMatch?.[1]);
+
+      const cleanedTitle = rawText.replace(/^Chapter\s+(?:Baru|Awal)\s+/i, "").trim() || `Chapter ${num}`;
 
       chapters.push({
         id: chSlug,
         number: num,
-        title: rawText || `Chapter ${num}`,
+        title: cleanedTitle,
+        ...(publishedAt ? { publishedAt } : {}),
       });
     }
 
@@ -366,31 +448,61 @@ const BacaKomik = {
   },
 
   async getChapterPages(chapterSlug) {
-    const url = `${this.baseUrl}/chapter/${chapterSlug}/`;
+    const cleanSlug = chapterSlug.replace(/^\/?chapter\//, "").replace(/\/$/, "");
+    const url = `${this.baseUrl}/${cleanSlug}/`;
     const html = await fetchHtml(url);
+
+    let targetHtml = "";
+    const startIdx = html.search(/id=["'](?:anjay_ini_id_kh|chimg-auh|readerarea|chcontent)["']|class=["'][^"']*(?:oi_ada_class_skrng|reading-content|ts_reader)["']/i);
+    if (startIdx !== -1) {
+      const endIdx = html.indexOf('<div class="nextprev"', startIdx) !== -1
+        ? html.indexOf('<div class="nextprev"', startIdx)
+        : html.indexOf('class="chapter-nav"', startIdx) !== -1
+        ? html.indexOf('class="chapter-nav"', startIdx)
+        : html.indexOf('id="comments"', startIdx) !== -1
+        ? html.indexOf('id="comments"', startIdx)
+        : startIdx + 80000;
+      targetHtml = html.slice(startIdx, endIdx);
+    } else {
+      const containerMatch =
+        /<div[^>]*id=["'](?:anjay_ini_id_kh|chimg-auh|readerarea|chcontent)["'][^>]*>([\s\S]*?)<\/div>/i.exec(html);
+      targetHtml = containerMatch ? containerMatch[1] : html;
+    }
+
     const imgRegex = /<img[^>]*>/gi;
     const attrRegex = /(?:data-lazy-src|this\.src|\bsrc)=["']([^"']+)["']/gi;
     const pages = [];
+    const seenUrls = new Set();
     let match, pageNum = 1;
 
-    while ((match = imgRegex.exec(html)) !== null) {
+    while ((match = imgRegex.exec(targetHtml)) !== null) {
       const tag = match[0];
       let attrMatch;
       attrRegex.lastIndex = 0;
+      const candidates = [];
       while ((attrMatch = attrRegex.exec(tag)) !== null) {
-        const src = attrMatch[1];
-        if (
-          src &&
-          (src.includes(".jpg") || src.includes(".webp") || src.includes(".png")) &&
-          !src.includes("logo") &&
-          !src.includes("avatar")
-        ) {
-          pages.push({
-            pageNumber: pageNum++,
-            imageUrl: sanitizeCover(src),
-          });
-          break;
-        }
+        candidates.push(attrMatch[1]);
+      }
+      const src = candidates.find(
+        (s) =>
+          s &&
+          !s.startsWith("data:") &&
+          !/resize=/i.test(s) &&
+          !s.includes("Ikon-HD-Bacakomik") &&
+          !s.includes("logo") &&
+          !s.includes("banner") &&
+          !s.includes("avatar") &&
+          !s.includes("saweria") &&
+          !s.includes("trakteer") &&
+          !s.includes("sociabuzz") &&
+          (s.includes(".jpg") || s.includes(".jpeg") || s.includes(".webp") || s.includes(".png") || s.includes("/uploads/") || s.includes("/wp-content/"))
+      );
+      if (src && !seenUrls.has(src)) {
+        seenUrls.add(src);
+        pages.push({
+          pageNumber: pageNum++,
+          imageUrl: sanitizeCover(src),
+        });
       }
     }
     return pages;
@@ -496,10 +608,14 @@ const Komiku = {
       const rawText = aMatch.replace(/<[^>]+>/g, "").trim();
       const num = parseNumber(rawText, chSlug);
 
+      const tglMatch = /<td class="tgl">([\s\S]*?)<\/td>/i.exec(match[0]);
+      const publishedAt = parseDateToIso(tglMatch?.[1]);
+
       chapters.push({
         id: chSlug,
         number: num,
         title: rawText || `Chapter ${num}`,
+        ...(publishedAt ? { publishedAt } : {}),
       });
     }
 
