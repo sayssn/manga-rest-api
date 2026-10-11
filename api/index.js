@@ -792,7 +792,7 @@ const SamehadakuAnime = {
 
       while ((liMatch = liRegex.exec(dBlock)) !== null) {
         const qText = liMatch[1].toLowerCase();
-        if (qText.includes("mkv") || qText.includes("x265")) continue;
+        if (qText.includes("mkv") || qText.includes("x265") || qText.includes("4k") || qText.includes("2160")) continue;
 
         let quality = "720p";
         if (qText.includes("1080") || qText.includes("fullhd")) quality = "1080p";
@@ -840,15 +840,18 @@ const SamehadakuAnime = {
             });
           }
           // Vidhide client HLS
-          else if (href.includes("vidhide") || href.includes("peytonepre") || anchorName.includes("vidhide")) {
+          else if (href.includes("vidhide") || href.includes("peytonepre") || href.includes("callistanise") || anchorName.includes("vidhide")) {
+            const normalizedVh = href
+              .replace("/v/", "/embed/")
+              .replace(/https?:\/\/(?:odvidhide\.com|vidhide\.com|vidhidepro\.com|vidhidefast\.com)/i, "https://callistanise.com");
             streams.push({
               server: `Samehadaku • Vidhide ${quality.toUpperCase()} (HLS)`,
               type: "m3u8",
-              url: href,
+              url: normalizedVh,
               quality,
               isEmbed: true,
               headers: {
-                Referer: "https://vidhidepro.com/",
+                Referer: "https://callistanise.com/",
                 "User-Agent": BROWSER_HEADERS["User-Agent"],
               },
             });
@@ -1031,9 +1034,46 @@ const OtakudesuAnime = {
     let liMatch;
     const resolutionTasks = [];
 
+    // 0. Check default iframe for fast ODCloud (Cloudflare CDN) direct MP4
+    const defIframeMatch =
+      /<div class=['"]responsive-embed-stream['"][^>]*>[\s\S]*?<iframe[^>]+src=['"]([^'"]+)['"]/i.exec(html) ||
+      /<iframe[^>]+src=['"](https?:\/\/desustream\.[^'"]+)['"]/i.exec(html);
+    if (defIframeMatch && defIframeMatch[1]) {
+      const defSrc = defIframeMatch[1].trim();
+      if (/desustream\.(?:net|me)\/dstream\/odcdn/i.test(defSrc)) {
+        resolutionTasks.push(
+          (async () => {
+            try {
+              const odHtml = await fetchHtml(defSrc);
+              const vMatch =
+                odHtml.match(/(?:const|var|let)\s+videoURL\s*=\s*["']([^"']+)["']/i) ||
+                odHtml.match(/src=["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i);
+              if (vMatch && vMatch[1] && !vMatch[1].includes("googlevideo.com")) {
+                const mp4Url = vMatch[1].trim();
+                const qMatch = mp4Url.match(/(1080p|720p|480p|360p)/i);
+                const odQuality = qMatch ? qMatch[1].toLowerCase() : "720p";
+                return {
+                  server: `Otakudesu • ODCloud ${odQuality.toUpperCase()} (Direct)`,
+                  type: "mp4",
+                  url: mp4Url,
+                  quality: odQuality,
+                  isEmbed: false,
+                  headers: {
+                    Referer: "https://desustream.net/",
+                    "User-Agent": BROWSER_HEADERS["User-Agent"],
+                  },
+                };
+              }
+            } catch {}
+            return null;
+          })()
+        );
+      }
+    }
+
     while ((liMatch = liRegex.exec(html)) !== null) {
       const qText = liMatch[1].toLowerCase();
-      if (qText.includes("mkv")) continue;
+      if (qText.includes("mkv") || qText.includes("4k") || qText.includes("2160")) continue;
 
       let quality = "720p";
       if (qText.includes("1080")) quality = "1080p";
@@ -1132,15 +1172,18 @@ const OtakudesuAnime = {
             );
           }
         } else if (name.includes("vidhide") || name.includes("odvidhide") || href.includes("vidhide")) {
-          if (href.includes("vidhide") || href.includes("peytonepre")) {
+          if (href.includes("vidhide") || href.includes("peytonepre") || href.includes("callistanise")) {
+            const normalizedVh = href
+              .replace("/v/", "/embed/")
+              .replace(/https?:\/\/(?:odvidhide\.com|vidhide\.com|vidhidepro\.com|vidhidefast\.com)/i, "https://callistanise.com");
             streams.push({
               server: `Otakudesu • Vidhide ${quality.toUpperCase()} (HLS)`,
               type: "m3u8",
-              url: href,
+              url: normalizedVh,
               quality,
               isEmbed: true,
               headers: {
-                Referer: "https://vidhidepro.com/",
+                Referer: "https://callistanise.com/",
                 "User-Agent": BROWSER_HEADERS["User-Agent"],
               },
             });
@@ -1153,15 +1196,18 @@ const OtakudesuAnime = {
                     redirect: "follow",
                   });
                   const finalUrl = res.url || "";
-                  if (finalUrl.includes("vidhide") || finalUrl.includes("peytonepre") || finalUrl.includes("odvidhide")) {
+                  if (finalUrl.includes("vidhide") || finalUrl.includes("peytonepre") || finalUrl.includes("odvidhide") || finalUrl.includes("callistanise")) {
+                    const normalizedVh = finalUrl
+                      .replace("/v/", "/embed/")
+                      .replace(/https?:\/\/(?:odvidhide\.com|vidhide\.com|vidhidepro\.com|vidhidefast\.com)/i, "https://callistanise.com");
                     return {
                       server: `Otakudesu • Vidhide ${quality.toUpperCase()} (HLS)`,
                       type: "m3u8",
-                      url: finalUrl,
+                      url: normalizedVh,
                       quality,
                       isEmbed: true,
                       headers: {
-                        Referer: "https://vidhidepro.com/",
+                        Referer: "https://callistanise.com/",
                         "User-Agent": BROWSER_HEADERS["User-Agent"],
                       },
                     };
@@ -1412,15 +1458,18 @@ const AnimeIndoAnime = {
           const qMatch = /(1080p|720p|480p|360p)/i.exec(label);
           const quality = qMatch ? qMatch[1].toLowerCase() : "720p";
 
-          if (streamUrl.includes("vidhide") || streamUrl.includes("peytonepre")) {
+          if (streamUrl.includes("vidhide") || streamUrl.includes("peytonepre") || streamUrl.includes("callistanise")) {
+            const normalizedVh = streamUrl
+              .replace("/v/", "/embed/")
+              .replace(/https?:\/\/(?:odvidhide\.com|vidhide\.com|vidhidepro\.com|vidhidefast\.com)/i, "https://callistanise.com");
             streams.push({
               server: `AnimeIndo • Vidhide ${quality.toUpperCase()}`,
               type: "m3u8",
-              url: streamUrl,
+              url: normalizedVh,
               quality,
               isEmbed: true,
               headers: {
-                Referer: "https://vidhidepro.com/",
+                Referer: "https://callistanise.com/",
                 "User-Agent": BROWSER_HEADERS["User-Agent"],
               },
             });
