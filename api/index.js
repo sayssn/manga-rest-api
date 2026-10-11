@@ -589,7 +589,7 @@ const SamehadakuAnime = {
         const jsonList = JSON.parse(text);
         if (Array.isArray(jsonList) && jsonList.length > 0) {
           return jsonList.map((item) => ({
-            sourceId: item.url ? parseSlug(item.url) : String(item.id),
+            sourceId: item.url ? parseSlug(item.url).replace(/-episode-\d+.*$/i, '') : String(item.id),
             title: cleanAnimeTitle(item.series_title || item.title),
             coverImage: sanitizeCover(item.thumb),
             latestEpisode: item.episode ? `Episode ${item.episode}` : undefined,
@@ -614,7 +614,7 @@ const SamehadakuAnime = {
       const epMatch = /<span class=['"]epx['"][^>]*>([^<]+)<\/span>/i.exec(block);
 
       if (hrefMatch && titleMatch) {
-        const sId = parseSlug(hrefMatch[1]);
+        const sId = parseSlug(hrefMatch[1]).replace(/-episode-\d+.*$/i, '');
         if (!seen.has(sId)) {
           seen.add(sId);
           items.push({
@@ -680,7 +680,8 @@ const SamehadakuAnime = {
   },
 
   async getDetail(slug) {
-    const url = slug.startsWith("http") ? slug : `${this.baseUrl}/anime/${slug}/`;
+    const cleanSlug = slug.replace(/-episode-\d+.*$/i, "");
+    const url = cleanSlug.startsWith("http") ? cleanSlug : `${this.baseUrl}/anime/${cleanSlug}/`;
     const html = await fetchHtml(url);
 
     const titleMatch =
@@ -995,6 +996,8 @@ const OtakudesuAnime = {
     // Parse download mirrors (Pdrain, Filedon, etc.)
     const liRegex = /<li><strong>([^<]+)<\/strong>([\s\S]*?)<\/li>/gi;
     let liMatch;
+    const pdrainResolutions = [];
+
     while ((liMatch = liRegex.exec(html)) !== null) {
       const qText = liMatch[1].toLowerCase();
       let quality = "720p";
@@ -1010,18 +1013,61 @@ const OtakudesuAnime = {
         const href = aMatch[1];
         const name = aMatch[2].trim().toLowerCase();
 
-        if (name.includes("pdrain") || href.includes("pixeldrain")) {
-          streams.push({
-            server: `Pixeldrain ${quality.toUpperCase()}`,
-            type: "mp4",
-            url: href,
-            quality,
-            isEmbed: false,
-            headers: {
-              Referer: `${this.baseUrl}/`,
-              "User-Agent": BROWSER_HEADERS["User-Agent"],
-            },
-          });
+        if (name.includes("pdrain") || href.includes("pixeldrain") || href.includes("link.desustream")) {
+          const directPdrain = href.includes("pixeldrain.com/u/")
+            ? href.replace("/u/", "/api/file/")
+            : href.includes("pixeldrain.com/api/file/")
+            ? href
+            : null;
+
+          if (directPdrain) {
+            streams.push({
+              server: `Pixeldrain ${quality.toUpperCase()} (Direct)`,
+              type: "mp4",
+              url: directPdrain,
+              quality,
+              isEmbed: false,
+              headers: {
+                Referer: "https://pixeldrain.com/",
+                "User-Agent": BROWSER_HEADERS["User-Agent"],
+              },
+            });
+          } else {
+            pdrainResolutions.push(
+              (async () => {
+                try {
+                  const resText = await fetchHtml(href);
+                  const idMatch =
+                    resText.match(/"id":"([A-Za-z0-9]+)"/) ||
+                    resText.match(/pixeldrain\.com\/(?:u|api\/file)\/([A-Za-z0-9]+)/);
+                  if (idMatch) {
+                    return {
+                      server: `Pixeldrain ${quality.toUpperCase()} (Direct)`,
+                      type: "mp4",
+                      url: `https://pixeldrain.com/api/file/${idMatch[1]}`,
+                      quality,
+                      isEmbed: false,
+                      headers: {
+                        Referer: "https://pixeldrain.com/",
+                        "User-Agent": BROWSER_HEADERS["User-Agent"],
+                      },
+                    };
+                  }
+                } catch {}
+                return {
+                  server: `Pixeldrain ${quality.toUpperCase()}`,
+                  type: "embed",
+                  url: href,
+                  quality,
+                  isEmbed: true,
+                  headers: {
+                    Referer: `${this.baseUrl}/`,
+                    "User-Agent": BROWSER_HEADERS["User-Agent"],
+                  },
+                };
+              })()
+            );
+          }
         } else if (name.includes("filedon") || href.includes("filedon")) {
           streams.push({
             server: `Filedon ${quality.toUpperCase()} (Direct)`,
@@ -1034,6 +1080,15 @@ const OtakudesuAnime = {
               "User-Agent": BROWSER_HEADERS["User-Agent"],
             },
           });
+        }
+      }
+    }
+
+    if (pdrainResolutions.length > 0) {
+      const resolved = await Promise.allSettled(pdrainResolutions);
+      for (const r of resolved) {
+        if (r.status === "fulfilled" && r.value) {
+          streams.push(r.value);
         }
       }
     }
