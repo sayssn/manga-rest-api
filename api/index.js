@@ -712,22 +712,48 @@ const SamehadakuAnime = {
 
     // Episodes
     const episodes = [];
-    const epRegex = /<a\s+[^>]*href=['"](https?:\/\/[^'"]+-episode-[^'"]+)['"][^>]*>([\s\S]*?)<\/a>/gi;
-    let epMatch;
     const seenEpUrls = new Set();
 
-    while ((epMatch = epRegex.exec(html)) !== null) {
-      const epUrl = epMatch[1];
+    // 1. Structured div.flex-grow blocks with date span
+    const blockRegex = /<div class=['"][^'"]*flex-grow[^'"]*['"][^>]*>([\s\S]*?)<\/div>/gi;
+    let bMatch;
+    while ((bMatch = blockRegex.exec(html)) !== null) {
+      const block = bMatch[1];
+      const aMatch = /<a\s+[^>]*href=['"](https?:\/\/[^'"]+-episode-[^'"]+)['"][^>]*>([\s\S]*?)<\/a>/i.exec(block);
+      if (!aMatch) continue;
+      const epUrl = aMatch[1];
       if (seenEpUrls.has(epUrl) || epUrl.includes("/batch/")) continue;
       seenEpUrls.add(epUrl);
 
-      const rawLabel = epMatch[2].replace(/<[^>]+>/g, "").trim();
+      const rawLabel = aMatch[2].replace(/<[^>]+>/g, "").trim();
+      const dateMatch = /<span[^>]*>([^<›]+)<\/span>/i.exec(block);
+      const releaseDate = dateMatch ? dateMatch[1].trim() : undefined;
       const num = extractEpisodeNumber(rawLabel, epUrl);
       episodes.push({
         episodeNumber: num,
         episodeLabel: num ? `Episode ${num}` : rawLabel || "Episode",
         providerEpisodeUrl: epUrl,
+        releaseDate: releaseDate || undefined,
       });
+    }
+
+    // 2. Fallback: all episode links
+    if (episodes.length === 0) {
+      const epRegex = /<a\s+[^>]*href=['"](https?:\/\/[^'"]+-episode-[^'"]+)['"][^>]*>([\s\S]*?)<\/a>/gi;
+      let epMatch;
+      while ((epMatch = epRegex.exec(html)) !== null) {
+        const epUrl = epMatch[1];
+        if (seenEpUrls.has(epUrl) || epUrl.includes("/batch/")) continue;
+        seenEpUrls.add(epUrl);
+
+        const rawLabel = epMatch[2].replace(/<[^>]+>/g, "").trim();
+        const num = extractEpisodeNumber(rawLabel, epUrl);
+        episodes.push({
+          episodeNumber: num,
+          episodeLabel: num ? `Episode ${num}` : rawLabel || "Episode",
+          providerEpisodeUrl: epUrl,
+        });
+      }
     }
 
     episodes.sort((a, b) => (a.episodeNumber || 0) - (b.episodeNumber || 0));
@@ -955,19 +981,26 @@ const OtakudesuAnime = {
 
     // Episodes
     const episodes = [];
-    const epRegex = /<a[^>]+href=['"](https:\/\/otakudesu\.blog\/episode\/[^'"]+)['"][^>]*>([^<]+)<\/a>/gi;
-    let epMatch;
     const seenEpUrls = new Set();
-    while ((epMatch = epRegex.exec(html)) !== null) {
+    const liEpRegex = /<li[^>]*>([\s\S]*?)<\/li>/gi;
+    let liMatch;
+    while ((liMatch = liEpRegex.exec(html)) !== null) {
+      const liBlock = liMatch[1];
+      const epMatch = /<a[^>]+href=['"](https:\/\/otakudesu\.blog\/episode\/[^'"]+)['"][^>]*>([^<]+)<\/a>/i.exec(liBlock);
+      if (!epMatch) continue;
       const epUrl = epMatch[1];
-      if (seenEpUrls.has(epUrl)) continue;
+      if (seenEpUrls.has(epUrl) || /batch/i.test(epUrl)) continue;
       seenEpUrls.add(epUrl);
       const epText = epMatch[2].trim();
+      const dateMatch = /<span class=['"]zeebr['"][^>]*>([^<]+)<\/span>/i.exec(liBlock);
+      const rawDate = dateMatch ? dateMatch[1].trim() : undefined;
+      const releaseDate = rawDate ? rawDate.replace(/,(\d)/, ", $1") : undefined;
       const num = extractEpisodeNumber(epText, epUrl);
       episodes.push({
         episodeNumber: num,
         episodeLabel: num ? `Episode ${num}` : epText,
         providerEpisodeUrl: epUrl,
+        releaseDate: releaseDate || undefined,
       });
     }
 
@@ -1197,11 +1230,12 @@ const AnimeIndoAnime = {
     const ratingMatch = /<strong>Rating\s*([0-9.]+)<\/strong>/i.exec(html);
     const statusMatch = /<b>Status:<\/b>\s*([^<]+)/i.exec(html);
 
-    // Genres
+    // Genres (scoped strictly to .genxed container so sidebar genres do not leak)
     const genres = [];
+    const genxedBlock = /<div class=['"]genxed['"][^>]*>([\s\S]*?)<\/div>/i.exec(html)?.[1] || "";
     const genreRegex = /<a[^>]+href=['"]https:\/\/animeindo\.me\/genres\/[^'"]+['"][^>]*>([^<]+)<\/a>/gi;
     let gMatch;
-    while ((gMatch = genreRegex.exec(html)) !== null) {
+    while ((gMatch = genreRegex.exec(genxedBlock)) !== null) {
       const g = gMatch[1].trim();
       if (g && !genres.includes(g)) genres.push(g);
     }
@@ -1209,17 +1243,24 @@ const AnimeIndoAnime = {
     // Episodes from eplister
     const episodes = [];
     const eplisterBlock = html.split(/class=['"]eplister['"]/i)[1]?.split(/<\/ul>/i)[0] || "";
-    const epRegex = /<li[^>]*>[\s\S]*?<a[^>]+href=['"]([^'"]+)['"][^>]*>[\s\S]*?<div class=['"]epl-num['"][^>]*>([^<]+)<\/div>[\s\S]*?<div class=['"]epl-title['"][^>]*>([^<]+)<\/div>[\s\S]*?<\/li>/gi;
+    const epRegex = /<li[^>]*>([\s\S]*?)<\/li>/gi;
     let epMatch;
 
     while ((epMatch = epRegex.exec(eplisterBlock)) !== null) {
-      const epUrl = epMatch[1];
-      const epNumStr = epMatch[2].trim();
+      const liBlock = epMatch[1];
+      const hrefMatch = /<a[^>]+href=['"]([^'"]+)['"]/i.exec(liBlock);
+      const numMatch = /<div class=['"]epl-num['"][^>]*>([^<]+)<\/div>/i.exec(liBlock);
+      const dateMatch = /<div class=['"]epl-date['"][^>]*>([^<]+)<\/div>/i.exec(liBlock);
+      if (!hrefMatch || !numMatch) continue;
+      const epUrl = hrefMatch[1];
+      const epNumStr = numMatch[1].trim();
+      const releaseDate = dateMatch ? dateMatch[1].trim() : undefined;
       const num = extractEpisodeNumber(epNumStr, epUrl);
       episodes.push({
         episodeNumber: num,
         episodeLabel: `Episode ${num || epNumStr}`,
         providerEpisodeUrl: epUrl,
+        releaseDate: releaseDate || undefined,
       });
     }
 
@@ -1269,6 +1310,31 @@ const AnimeIndoAnime = {
               isEmbed: true,
               headers: {
                 Referer: "https://vidhidepro.com/",
+                "User-Agent": BROWSER_HEADERS["User-Agent"],
+              },
+            });
+          } else if (streamUrl.includes("filedon.co")) {
+            streams.push({
+              server: `Filedon ${quality.toUpperCase()}`,
+              type: "mp4",
+              url: streamUrl,
+              quality,
+              isEmbed: true,
+              headers: {
+                Referer: `${this.baseUrl}/`,
+                "User-Agent": BROWSER_HEADERS["User-Agent"],
+              },
+            });
+          } else if (streamUrl.includes(".mp4") || streamUrl.includes(".m3u8")) {
+            const isM3u8 = streamUrl.includes(".m3u8");
+            streams.push({
+              server: `${label || "Direct"} ${quality.toUpperCase()}`.trim(),
+              type: isM3u8 ? "m3u8" : "mp4",
+              url: streamUrl,
+              quality,
+              isEmbed: false,
+              headers: {
+                Referer: `${this.baseUrl}/`,
                 "User-Agent": BROWSER_HEADERS["User-Agent"],
               },
             });
