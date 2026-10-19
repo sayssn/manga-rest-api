@@ -170,13 +170,14 @@ function parseDateToIso(rawDate) {
   return undefined;
 }
 
-function jsonResponse(data, status = 200) {
+function jsonResponse(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
     headers: {
       "Content-Type": "application/json; charset=UTF-8",
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+      ...extraHeaders,
     },
   });
 }
@@ -1133,6 +1134,48 @@ const OtakudesuAnime = {
     }
 
     episodes.sort((a, b) => (a.episodeNumber || 0) - (b.episodeNumber || 0));
+
+    // Transparently backfill episode gaps from AnimeIndo for continuous series (e.g. One Piece 201-900)
+    const CONTINUOUS_SERIES_MAP = {
+      "one-piece-sub-indo": "one-piece",
+      "one-piece": "one-piece",
+      "detective-conan-sub-indo": "detective-conan",
+      "detective-conan": "detective-conan",
+    };
+    const animeIndoSlug = CONTINUOUS_SERIES_MAP[cleanSlug] || cleanSlug.replace(/-(?:sub-indo|sub-id|subtitle-indonesia)$/i, "");
+    const isContinuous = Boolean(CONTINUOUS_SERIES_MAP[cleanSlug] || CONTINUOUS_SERIES_MAP[animeIndoSlug]);
+    let hasGap = false;
+    if (episodes.length > 1) {
+      for (let i = 1; i < episodes.length; i++) {
+        if ((episodes[i].episodeNumber || 0) - (episodes[i - 1].episodeNumber || 0) > 5) {
+          hasGap = true;
+          break;
+        }
+      }
+    }
+
+    if (isContinuous || hasGap) {
+      try {
+        const indoDetail = await AnimeIndoAnime.getDetail(animeIndoSlug);
+        if (indoDetail && Array.isArray(indoDetail.episodes) && indoDetail.episodes.length > 0) {
+          const existingNums = new Set(episodes.map((e) => e.episodeNumber).filter((n) => typeof n === "number"));
+          for (const secEp of indoDetail.episodes) {
+            if (typeof secEp.episodeNumber === "number" && !existingNums.has(secEp.episodeNumber)) {
+              episodes.push({
+                id: `animeindo:${animeIndoSlug}:${secEp.episodeNumber}`,
+                episodeNumber: secEp.episodeNumber,
+                episodeLabel: secEp.episodeLabel || `Episode ${secEp.episodeNumber}`,
+                providerEpisodeUrl: secEp.providerEpisodeUrl || secEp.url || "",
+                releaseDate: secEp.releaseDate,
+              });
+            }
+          }
+          episodes.sort((a, b) => (a.episodeNumber || 0) - (b.episodeNumber || 0));
+        }
+      } catch (err) {
+        // Continue with original episodes if AnimeIndo backfill fails
+      }
+    }
 
     let status = statusMatch ? statusMatch[1].trim() : "Ongoing";
     if (
@@ -2661,7 +2704,9 @@ export default async function handler(req) {
         if (data && data.episodes && data.episodes.length > 0) {
           setCached(cacheKey, result, 1800);
         }
-        return jsonResponse(result);
+        return jsonResponse(result, 200, {
+          "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400",
+        });
       } catch (err) {
         return jsonResponse({ status: "error", message: err.message }, 502);
       }
