@@ -46,10 +46,10 @@ const BROWSER_HEADERS = {
   "Priority": "u=0, i",
 };
 
-async function fetchHtml(url) {
+async function fetchHtml(url, customHeaders) {
   const res = await fetch(url, {
     method: "GET",
-    headers: BROWSER_HEADERS,
+    headers: customHeaders || BROWSER_HEADERS,
     redirect: "follow",
   });
   if (!res.ok) {
@@ -1715,6 +1715,11 @@ const AnimeIndoAnime = {
 // 4. Kuramanime Provider
 const KuramanimeAnime = {
   baseUrl: "https://v20.kuramanime.ing",
+  headers: {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+  },
 
   extractId(url) {
     if (!url) return "";
@@ -1762,7 +1767,7 @@ const KuramanimeAnime = {
 
   async getLatest(page = 1) {
     const url = `${this.baseUrl}/quick/ongoing?order_by=updated&page=${page}`;
-    const html = await fetchHtml(url);
+    const html = await fetchHtml(url, this.headers);
     return this.parseSearchHtml(html);
   },
 
@@ -1779,14 +1784,14 @@ const KuramanimeAnime = {
 
   async search(query, page = 1) {
     const url = `${this.baseUrl}/anime?search=${encodeURIComponent(query)}&page=${page}`;
-    const html = await fetchHtml(url);
+    const html = await fetchHtml(url, this.headers);
     return this.parseSearchHtml(html);
   },
 
   async getDetail(slug) {
     const id = this.extractId(slug);
     const detailUrl = slug.startsWith("http") ? slug : `${this.baseUrl}/anime/${id}`;
-    const html = await fetchHtml(detailUrl);
+    const html = await fetchHtml(detailUrl, this.headers);
 
     const titleMatch =
       /<h3 class=['"]text-white['"][^>]*>([\s\S]*?)<\/h3>/i.exec(html) ||
@@ -1870,7 +1875,7 @@ const KuramanimeAnime = {
     const fullUrl = targetUrl.startsWith("http") ? targetUrl : `${this.baseUrl}/${targetUrl.replace(/^\/+/, "")}`;
     let html = "";
     try {
-      html = await fetchHtml(fullUrl);
+      html = await fetchHtml(fullUrl, this.headers);
     } catch {
       return [];
     }
