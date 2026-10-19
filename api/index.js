@@ -1712,6 +1712,263 @@ const AnimeIndoAnime = {
   },
 };
 
+// 4. Kuramanime Provider
+const KuramanimeAnime = {
+  baseUrl: "https://v20.kuramanime.ing",
+
+  extractId(url) {
+    if (!url) return "";
+    const trimmed = url.replace(/\/+$/, "");
+    const match = trimmed.match(/\/anime\/([^/]+\/[^/]+)/);
+    if (match) return match[1];
+    const parts = trimmed.split("/");
+    return parts.slice(-2).join("/") || parts[parts.length - 1] || "";
+  },
+
+  cleanTitle(raw) {
+    if (!raw) return "";
+    return raw.replace(/<[^>]+>/g, "").trim();
+  },
+
+  parseSearchHtml(html) {
+    const results = [];
+    const blocks = html.split(/<div class=['"]product__item/i).slice(1);
+    for (const block of blocks) {
+      const linkMatch = /<a[^>]+href=['"]([^'"]*\/anime\/[^'"]+)['"][^>]*>([\s\S]*?)<\/a>/i.exec(block);
+      if (!linkMatch) continue;
+      const href = linkMatch[1];
+      const sourceId = this.extractId(href);
+
+      const titleMatch = /<h5><a[^>]*>([\s\S]*?)<\/a><\/h5>/i.exec(block) || linkMatch;
+      const title = this.cleanTitle(titleMatch[1] || sourceId);
+
+      const bgMatch = /data-setbg=['"]([^'"]+)['"]/i.exec(block) || /<img[^>]+src=['"]([^'"]+)['"]/i.exec(block);
+      const coverImage = bgMatch ? bgMatch[1] : undefined;
+
+      const epMatch = /<div class=['"]ep['"][^>]*>([\s\S]*?)<\/div>/i.exec(block) || /<span>([\s\S]*?)<\/span>/i.exec(block);
+      const latestEpisode = epMatch ? this.cleanTitle(epMatch[1]) : undefined;
+
+      results.push({
+        sourceId,
+        provider: "kuramanime",
+        title,
+        coverImage,
+        latestEpisode,
+        type: "TV",
+      });
+    }
+    return results;
+  },
+
+  async getLatest(page = 1) {
+    const url = `${this.baseUrl}/quick/ongoing?order_by=updated&page=${page}`;
+    const html = await fetchHtml(url);
+    return this.parseSearchHtml(html);
+  },
+
+  async getFeed() {
+    const ongoing = await this.getLatest(1);
+    return {
+      featured: ongoing.slice(0, 5),
+      spotlight: ongoing.slice(0, 5),
+      latestEpisodes: ongoing,
+      ongoing: ongoing.slice(0, 15),
+      completed: [],
+    };
+  },
+
+  async search(query, page = 1) {
+    const url = `${this.baseUrl}/anime?search=${encodeURIComponent(query)}&page=${page}`;
+    const html = await fetchHtml(url);
+    return this.parseSearchHtml(html);
+  },
+
+  async getDetail(slug) {
+    const id = this.extractId(slug);
+    const detailUrl = slug.startsWith("http") ? slug : `${this.baseUrl}/anime/${id}`;
+    const html = await fetchHtml(detailUrl);
+
+    const titleMatch =
+      /<h3 class=['"]text-white['"][^>]*>([\s\S]*?)<\/h3>/i.exec(html) ||
+      /<div class=['"]anime__details__title['"][^>]*>[\s\S]*?<h3>([\s\S]*?)<\/h3>/i.exec(html);
+    const title = this.cleanTitle(titleMatch ? titleMatch[1] : id);
+
+    const bgMatch =
+      /class=['"][^'"]*anime__details__pic[^'"]*['"][^>]*data-setbg=['"]([^'"]+)['"]/i.exec(html) ||
+      /<div class=['"]anime__details__pic['"][^>]*>[\s\S]*?<img[^>]+src=['"]([^'"]+)['"]/i.exec(html);
+    const coverImage = bgMatch ? bgMatch[1] : undefined;
+
+    const synopsisMatch = /<div class=['"]anime__details__text['"][^>]*>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/i.exec(html);
+    const synopsis = synopsisMatch ? this.cleanTitle(synopsisMatch[1]) : undefined;
+
+    const genres = [];
+    const genreRegex = /<a[^>]+href=['"][^'"]*\/genre[s]?\/[^'"]+['"][^>]*>([^<]+)<\/a>/gi;
+    let gMatch;
+    while ((gMatch = genreRegex.exec(html)) !== null) {
+      const g = gMatch[1].trim();
+      if (g && !genres.includes(g)) genres.push(g);
+    }
+
+    const episodes = [];
+    const seenUrls = new Set();
+    const addEpisode = (rawHref, rawText) => {
+      if (!rawHref || rawHref.includes("?page=")) return;
+      const fullUrl = rawHref.startsWith("http") ? rawHref : `${this.baseUrl}${rawHref.startsWith("/") ? "" : "/"}${rawHref}`;
+      if (seenUrls.has(fullUrl)) return;
+      if (/terlama|terbaru/i.test(rawText)) return;
+
+      const numMatch = /(?:episode|eps|ep)\.?\s*(\d+(?:\.\d+)?)/i.exec(rawText) || /(\d+(?:\.\d+)?)/.exec(rawText);
+      const episodeNumber = numMatch ? parseFloat(numMatch[1]) : undefined;
+      const episodeLabel = rawText ? this.cleanTitle(rawText) : (episodeNumber ? `Episode ${episodeNumber}` : "Episode");
+
+      seenUrls.add(fullUrl);
+      episodes.push({
+        episodeNumber,
+        episodeLabel,
+        providerEpisodeUrl: fullUrl,
+      });
+    };
+
+    const dataContentMatch = /id=['"]episodeLists['"][^>]*data-content=['"]([^'"]+)['"]/i.exec(html);
+    if (dataContentMatch) {
+      const content = dataContentMatch[1]
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&");
+      const epAnchorRegex = /<a[^>]+href=['"]([^'"]+)['"][^>]*>([\s\S]*?)<\/a>/gi;
+      let m;
+      while ((m = epAnchorRegex.exec(content)) !== null) {
+        addEpisode(m[1], m[2]);
+      }
+    }
+
+    const directEpRegex = /<a[^>]+href=['"]([^'"]*\/episode\/[^'"]+)['"][^>]*>([\s\S]*?)<\/a>/gi;
+    let deMatch;
+    while ((deMatch = directEpRegex.exec(html)) !== null) {
+      addEpisode(deMatch[1], deMatch[2]);
+    }
+
+    const isCompleted = /selesai|tamat|completed/i.test(html);
+    const status = isCompleted ? "Completed" : "Ongoing";
+
+    return {
+      sourceId: id,
+      provider: "kuramanime",
+      title,
+      synopsis,
+      coverImage,
+      status,
+      type: "TV",
+      genres,
+      episodes,
+    };
+  },
+
+  async getEpisodeStreams(targetUrl) {
+    const fullUrl = targetUrl.startsWith("http") ? targetUrl : `${this.baseUrl}/${targetUrl.replace(/^\/+/, "")}`;
+    let html = "";
+    try {
+      html = await fetchHtml(fullUrl);
+    } catch {
+      return [];
+    }
+
+    const streams = [];
+    const seenUrls = new Set();
+    const normalizeQuality = (raw) => {
+      if (!raw) return undefined;
+      const m = raw.match(/\b(1080p|720p|480p|360p)\b/i) || raw.match(/\b(1080|720|480|360)\b/);
+      if (m) {
+        const val = m[1].toLowerCase();
+        return val.endsWith("p") ? val : `${val}p`;
+      }
+      return undefined;
+    };
+
+    const addStream = (source) => {
+      if (!source.url || seenUrls.has(source.url)) return;
+      seenUrls.add(source.url);
+      streams.push(source);
+    };
+
+    const videoRegex = /<(?:video|source)[^>]+(?:data-src|src)=['"]([^'"]+)['"][^>]*>/gi;
+    let vMatch;
+    while ((vMatch = videoRegex.exec(html)) !== null) {
+      const src = vMatch[1];
+      if (src && !src.startsWith("blob:") && !src.startsWith("javascript:")) {
+        const full = src.startsWith("//") ? `https:${src}` : src.startsWith("/") ? `${this.baseUrl}${src}` : src;
+        const q = normalizeQuality(vMatch[0]) || normalizeQuality(full) || "720p";
+        addStream({
+          server: `Kuramanime ${q} (Direct)`,
+          type: full.includes(".m3u8") ? "m3u8" : "mp4",
+          url: full.trim(),
+          quality: q,
+          isEmbed: false,
+          headers: { Referer: fullUrl },
+        });
+      }
+    }
+
+    const dlRegex = /<a[^>]+href=['"]([^'"]+)['"][^>]*>([\s\S]*?)<\/a>/gi;
+    let dlMatch;
+    while ((dlMatch = dlRegex.exec(html)) !== null) {
+      const rawHref = dlMatch[1];
+      const text = dlMatch[2].replace(/<[^>]+>/g, "").trim();
+      if (!rawHref || rawHref === "#" || rawHref.startsWith("javascript:")) continue;
+      const fullHref = rawHref.startsWith("//") ? `https:${rawHref}` : rawHref.startsWith("/") ? `${this.baseUrl}${rawHref}` : rawHref;
+      const q = normalizeQuality(text) || normalizeQuality(fullHref) || "720p";
+
+      if (fullHref.includes(".mp4") || fullHref.includes(".m3u8")) {
+        addStream({
+          server: `KuramaDrive ${q} (Direct)`,
+          type: fullHref.includes(".m3u8") ? "m3u8" : "mp4",
+          url: fullHref.trim(),
+          quality: q,
+          isEmbed: false,
+          headers: { Referer: fullUrl },
+        });
+      } else if (/mega\.nz|filemoon|streamwish|filelions|dood|yourupload/i.test(fullHref)) {
+        let name = "Kurama Mirror";
+        if (/mega\.nz/i.test(fullHref)) name = "MEGA";
+        else if (/filemoon/i.test(fullHref)) name = "FileMoon";
+        else if (/streamwish/i.test(fullHref)) name = "StreamWish";
+        else if (/filelions/i.test(fullHref)) name = "FileLions";
+        else if (/dood/i.test(fullHref)) name = "DoodStream";
+        else if (/yourupload/i.test(fullHref)) name = "YourUpload";
+
+        addStream({
+          server: `${name} ${q} (Embed)`,
+          type: "embed",
+          url: fullHref.trim(),
+          quality: q,
+          isEmbed: true,
+          headers: { Referer: fullUrl },
+        });
+      }
+    }
+
+    const iframeRegex = /<iframe[^>]+(?:data-src|src)=['"]([^'"]+)['"][^>]*>/gi;
+    let ifMatch;
+    while ((ifMatch = iframeRegex.exec(html)) !== null) {
+      const src = ifMatch[1];
+      if (src && !/ads|kuramachat/i.test(src)) {
+        const fullSrc = src.startsWith("//") ? `https:${src}` : src.startsWith("/") ? `${this.baseUrl}${src}` : src;
+        addStream({
+          server: "Kurama Player (Embed)",
+          type: "embed",
+          url: fullSrc.trim(),
+          isEmbed: true,
+          headers: { Referer: fullUrl },
+        });
+      }
+    }
+
+    return streams;
+  },
+};
+
 // ----------------------------------------------------------------------------
 // Main Handler
 // ----------------------------------------------------------------------------
@@ -1739,7 +1996,7 @@ export default async function handler(req) {
       status: "operational",
       uptime: "healthy",
       manga_providers: ["komikindo", "bacakomik", "komiku"],
-      anime_providers: ["samehadaku", "otakudesu", "animeindo"],
+      anime_providers: ["samehadaku", "otakudesu", "animeindo", "kuramanime"],
       endpoints: [
         "/api/:provider/search?q=:query",
         "/api/:provider/latest?page=:page",
@@ -1770,6 +2027,7 @@ export default async function handler(req) {
         case "samehadaku": return SamehadakuAnime;
         case "otakudesu": return OtakudesuAnime;
         case "animeindo": return AnimeIndoAnime;
+        case "kuramanime": return KuramanimeAnime;
         default: return null;
       }
     };
