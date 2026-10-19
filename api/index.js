@@ -2708,24 +2708,9 @@ export default async function handler(req) {
 
     // A6. Anime Schedule -> /api/anime/schedule
     if (path === "/api/anime/schedule") {
-      const cacheKey = "anime:schedule";
+      const cacheKey = "anime:schedule:v5";
       const cached = getCached(cacheKey);
       if (cached) return jsonResponse(cached);
-
-      // 1. Try pre-computed enriched schedule from backend proxy (100% covers, genres, ratings, banners)
-      try {
-        const backendRes = await fetch("https://deimanga-proxy.saysnain.workers.dev/api/v1/anime/schedule", {
-          headers: BROWSER_HEADERS,
-          signal: AbortSignal.timeout(4000),
-        });
-        if (backendRes.ok) {
-          const backendData = await backendRes.json();
-          if (backendData && backendData.schedule && typeof backendData.total === "number" && backendData.total > 0) {
-            setCached(cacheKey, backendData, 1800);
-            return jsonResponse(backendData);
-          }
-        }
-      } catch {}
 
       const schedule = {
         senin: [],
@@ -2739,24 +2724,55 @@ export default async function handler(req) {
       };
 
       try {
-        const [otakuRes, animokRes] = await Promise.allSettled([
+        const [otakuRes, ongoingP1, ongoingP2, ongoingP3] = await Promise.allSettled([
           fetchHtml("https://otakudesu.blog/jadwal-rilis/"),
-          fetch("https://go.dashbursanime.my.id/api/v3/content/jadwal", {
-            headers: BROWSER_HEADERS,
-            signal: AbortSignal.timeout(6000),
-          }).then((r) => (r.ok ? r.json() : [])),
+          fetchHtml("https://otakudesu.blog/ongoing-anime/"),
+          fetchHtml("https://otakudesu.blog/ongoing-anime/page/2/"),
+          fetchHtml("https://otakudesu.blog/ongoing-anime/page/3/"),
         ]);
 
         const otakuHtml = otakuRes.status === "fulfilled" ? otakuRes.value : "";
-        const animokData = animokRes.status === "fulfilled" && Array.isArray(animokRes.value) ? animokRes.value : [];
+        const ongoingCovers = new Map();
+
+        for (const p of [ongoingP1, ongoingP2, ongoingP3]) {
+          if (p.status !== "fulfilled" || !p.value) continue;
+          const html = p.value;
+          const venzStart = html.indexOf('class="venz"');
+          if (venzStart === -1) continue;
+          const venzEnd = html.indexOf("</div>", venzStart + 25000);
+          const venzHtml = html.slice(venzStart, venzEnd !== -1 ? venzEnd : undefined);
+          const lis = venzHtml.split("<li").slice(1);
+
+          for (const li of lis) {
+            const hrefMatch = /href=["']([^"']*\/anime\/[^"']+)["']/i.exec(li);
+            const imgMatch = /<img[^>]+src=["']([^"']+)["']/i.exec(li);
+            const titleMatch = /<h2[^>]*class=["']jdlflm["'][^>]*>([\s\S]*?)<\/h2>/i.exec(li);
+            const epsMatch = /<div[^>]*class=["']epz["'][^>]*>([\s\S]*?)<\/div>/i.exec(li);
+
+            if (hrefMatch) {
+              const href = hrefMatch[1];
+              const slugMatch = href.match(/\/anime\/([^/]+)/);
+              const slug = slugMatch ? slugMatch[1] : parseSlug(href);
+              const img = imgMatch ? sanitizeCover(imgMatch[1]) || imgMatch[1] : "";
+              const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, "").trim() : "";
+              const eps = epsMatch ? epsMatch[1].replace(/<[^>]+>/g, "").trim() : "";
+
+              if (slug && img) {
+                ongoingCovers.set(slug, { cover: img, eps });
+                const norm = title.toLowerCase().replace(/[^a-z0-9]/g, "");
+                if (norm) ongoingCovers.set(norm, { cover: img, eps });
+              }
+            }
+          }
+        }
 
         if (otakuHtml) {
           const kgBlocks = otakuHtml.split(/<div class=['"]kglist321['"][^>]*>/i).slice(1);
           for (const block of kgBlocks) {
             const h2Match = /<h2[^>]*>([\s\S]*?)<\/h2>/i.exec(block);
             if (!h2Match) continue;
-            const dayName = h2Match[1].replace(/<[^>]+>/g, "").trim().toLowerCase();
-            const targetDay = schedule[dayName] ? dayName : "random";
+            const rawDay = h2Match[1].replace(/<[^>]+>/g, "").trim().toLowerCase();
+            const targetDay = schedule[rawDay] ? rawDay : "random";
 
             const aRegex = /<a[^>]+href=['"]([^'"]*\/anime\/[^'"]+)['"][^>]*>([\s\S]*?)<\/a>/gi;
             let m;
@@ -2765,37 +2781,37 @@ export default async function handler(req) {
               const title = m[2].replace(/<[^>]+>/g, "").trim();
               const slugMatch = href.match(/\/anime\/([^/]+)/);
               const sourceId = slugMatch ? slugMatch[1] : parseSlug(href);
+
               if (title && sourceId) {
+                // Filter out completed / batch entries
+                if (
+                  /\b(?:tamat|completed|batch)\b/i.test(title) ||
+                  /(?:-|^)(?:tamat|completed|batch)(?:-|$)/i.test(sourceId)
+                ) {
+                  continue;
+                }
+
+                const norm = title.toLowerCase().replace(/[^a-z0-9]/g, "");
+                const matchedCover = ongoingCovers.get(sourceId) || ongoingCovers.get(norm);
+
                 schedule[targetDay].push({
-                  title,
+                  id: sourceId,
                   sourceId,
+                  title,
+                  day: targetDay,
+                  dayLabel: targetDay.charAt(0).toUpperCase() + targetDay.slice(1),
                   provider: "otakudesu",
+                  coverImage: matchedCover?.cover || undefined,
+                  latestEpisode: matchedCover?.eps || undefined,
                 });
               }
             }
           }
         }
 
-        for (const item of animokData) {
-          const rawDay = (item.hari || "").toLowerCase().trim();
-          const targetDay = schedule[rawDay] ? rawDay : "random";
-          const title = item.title || item.nama || "";
-          const slug = item.slug || item.id || "";
-          if (!title) continue;
-
-          const exists = schedule[targetDay].some(
-            (s) => s.title.toLowerCase() === title.toLowerCase()
-          );
-          if (!exists) {
-            schedule[targetDay].push({
-              title,
-              sourceId: slug,
-              provider: "animok",
-              coverImage: item.cover || item.poster || undefined,
-              latestEpisode: item.episode || item.eps || undefined,
-            });
-          }
-        }
+        const dayIndexMap = ["minggu", "senin", "selasa", "rabu", "kamis", "jumat", "sabtu"];
+        const wibDate = new Date(Date.now() + 7 * 60 * 60 * 1000);
+        const today = dayIndexMap[wibDate.getUTCDay()];
 
         let total = 0;
         for (const day of Object.keys(schedule)) {
@@ -2804,6 +2820,7 @@ export default async function handler(req) {
 
         const result = {
           status: "success",
+          today,
           total,
           schedule,
         };
