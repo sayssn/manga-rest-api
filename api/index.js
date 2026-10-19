@@ -1141,7 +1141,23 @@ const OtakudesuAnime = {
   },
 
   async getEpisodeStreams(slugOrUrl) {
-    const url = slugOrUrl.startsWith("http") ? slugOrUrl : `${this.baseUrl}/episode/${slugOrUrl}/`;
+    const compMatch = String(slugOrUrl).match(/^([a-z0-9_-]+):([a-z0-9_-]+):(\d+)$/i);
+    let resolvedUrl = slugOrUrl;
+    if (compMatch) {
+      const seriesSlug = compMatch[2];
+      const targetEpNum = parseInt(compMatch[3], 10);
+      try {
+        const detail = await this.getDetail(seriesSlug);
+        const ep = detail.episodes?.find((e) => e.episodeNumber === targetEpNum);
+        if (ep && ep.providerEpisodeUrl) {
+          resolvedUrl = ep.providerEpisodeUrl;
+        }
+      } catch {}
+    }
+
+    const url = resolvedUrl.startsWith("http")
+      ? resolvedUrl
+      : (resolvedUrl.startsWith("episode/") ? `${this.baseUrl}/${resolvedUrl}/` : `${this.baseUrl}/episode/${resolvedUrl}/`);
     const html = await fetchHtml(url);
     const streams = [];
 
@@ -1150,13 +1166,28 @@ const OtakudesuAnime = {
     let liMatch;
     const resolutionTasks = [];
 
-    // 0. Check default iframe for fast ODCloud (Cloudflare CDN) direct MP4
+    // 0. Check default iframe for fast Moedesu / ODCloud direct playback
     const defIframeMatch =
       /<div class=['"]responsive-embed-stream['"][^>]*>[\s\S]*?<iframe[^>]+src=['"]([^'"]+)['"]/i.exec(html) ||
-      /<iframe[^>]+src=['"](https?:\/\/desustream\.[^'"]+)['"]/i.exec(html);
+      /<div id=['"]pembed['"][^>]*>[\s\S]*?<iframe[^>]+src=['"]([^'"]+)['"]/i.exec(html) ||
+      /<iframe[^>]+src=['"](https?:\/\/desustream\.[^'"]+)['"]/i.exec(html) ||
+      /<iframe[^>]+src=['"]([^'"]+)['"]/i.exec(html);
+
     if (defIframeMatch && defIframeMatch[1]) {
       const defSrc = defIframeMatch[1].trim();
-      if (/desustream\.(?:net|me)\/dstream\/odcdn/i.test(defSrc)) {
+      if (/moedesu|desustream\.(?:net|me)\/dstream\/moedesu/i.test(defSrc)) {
+        streams.push({
+          server: "Otakudesu • Moedesu (Google Video)",
+          type: "embed",
+          url: defSrc,
+          quality: "720p",
+          isEmbed: true,
+          headers: {
+            Referer: `${this.baseUrl}/`,
+            "User-Agent": BROWSER_HEADERS["User-Agent"],
+          },
+        });
+      } else if (/desustream\.(?:net|me)\/dstream\/odcdn/i.test(defSrc)) {
         resolutionTasks.push(
           (async () => {
             try {
@@ -1185,6 +1216,90 @@ const OtakudesuAnime = {
           })()
         );
       }
+    }
+
+    // 0.5. Check AJAX mirrors (.mirrorstream a[data-content])
+    const actions = Array.from(html.matchAll(/action\s*:\s*["']([a-f0-9]{32})["']/g)).map((m) => m[1]);
+    if (actions.length >= 2) {
+      const streamAction = actions[0];
+      const nonceAction = actions[1];
+      try {
+        const nonceRes = await fetch(`${this.baseUrl}/wp-admin/admin-ajax.php`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": BROWSER_HEADERS["User-Agent"],
+            Referer: url,
+          },
+          body: `action=${nonceAction}`,
+          signal: AbortSignal.timeout(4000),
+        });
+        const nonceJson = await nonceRes.json();
+        const nonce = nonceJson?.data;
+        if (nonce) {
+          const mirrorRegex = /<a[^>]+href=['"]#['"][^>]+data-content=['"]([^'"]+)['"][^>]*>([^<]+)<\/a>/gi;
+          let m;
+          const mirrorTasks = [];
+          while ((m = mirrorRegex.exec(html)) !== null) {
+            const dataContent = m[1];
+            const label = m[2].trim();
+            try {
+              const payload = JSON.parse(Buffer.from(dataContent, "base64").toString("utf-8"));
+              mirrorTasks.push((async () => {
+                try {
+                  const body = new URLSearchParams({
+                    ...payload,
+                    nonce,
+                    action: streamAction,
+                  }).toString();
+                  const r = await fetch(`${this.baseUrl}/wp-admin/admin-ajax.php`, {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/x-www-form-urlencoded",
+                      "User-Agent": BROWSER_HEADERS["User-Agent"],
+                      Referer: url,
+                    },
+                    body,
+                    signal: AbortSignal.timeout(4000),
+                  });
+                  const j = await r.json();
+                  if (j?.data) {
+                    const decoded = Buffer.from(j.data, "base64").toString("utf-8");
+                    const srcMatch = decoded.match(/src=["']([^"']+)["']/i);
+                    if (srcMatch) {
+                      return { label, q: payload.q, src: srcMatch[1] };
+                    }
+                  }
+                } catch {}
+                return null;
+              })());
+            } catch {}
+          }
+          if (mirrorTasks.length > 0) {
+            const resolvedMirrors = await Promise.allSettled(mirrorTasks.slice(0, 8));
+            for (const res of resolvedMirrors) {
+              if (res.status === "fulfilled" && res.value) {
+                const { label, q, src } = res.value;
+                const quality = q || "720p";
+                const serverName = `Otakudesu • ${label.toUpperCase()} ${quality}`;
+                if (!streams.some((s) => s.url === src)) {
+                  streams.push({
+                    server: serverName,
+                    type: "embed",
+                    url: src,
+                    quality,
+                    isEmbed: true,
+                    headers: {
+                      Referer: `${this.baseUrl}/`,
+                      "User-Agent": BROWSER_HEADERS["User-Agent"],
+                    },
+                  });
+                }
+              }
+            }
+          }
+        }
+      } catch {}
     }
 
     while ((liMatch = liRegex.exec(html)) !== null) {
@@ -2529,8 +2644,13 @@ export default async function handler(req) {
       if (!provider) return jsonResponse({ error: "Invalid anime provider" }, 400);
 
       const cacheKey = `anime:episode:${providerName}:${episodeTarget}`;
-      const cached = getCached(cacheKey);
-      if (cached) return jsonResponse(cached);
+      const isRefresh = url.searchParams.get("refresh") === "1";
+      if (!isRefresh) {
+        const cached = getCached(cacheKey);
+        if (cached && Array.isArray(cached.streams) && cached.streams.length > 0) {
+          return jsonResponse(cached);
+        }
+      }
 
       try {
         const streams = await provider.getEpisodeStreams(episodeTarget);
@@ -2541,7 +2661,9 @@ export default async function handler(req) {
           total: streams.length,
           streams,
         };
-        setCached(cacheKey, result, 1800);
+        if (streams.length > 0) {
+          setCached(cacheKey, result, 1800);
+        }
         return jsonResponse(result);
       } catch (err) {
         return jsonResponse({ status: "error", message: err.message }, 502);
