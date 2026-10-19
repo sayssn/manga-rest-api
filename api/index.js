@@ -1969,6 +1969,346 @@ const KuramanimeAnime = {
   },
 };
 
+// 5. Nimegami Provider
+const NimegamiAnime = {
+  baseUrl: "https://nimegami.id",
+
+  cleanTitle(title) {
+    if (!title) return "";
+    return title
+      .replace(/^(Nonton|Download)\s+/i, "")
+      .replace(/\s*(Sub\s*Indo|Subtitle\s*Indonesia).*$/i, "")
+      .replace(/\s*:\s*Episode\s*\d+.*$/i, "")
+      .replace(/\s*BD\b/gi, "")
+      .replace(/\s*\(End\)/gi, "")
+      .replace(/<[^>]+>/g, "")
+      .trim();
+  },
+
+  extractSlug(url) {
+    if (!url) return "";
+    const trimmed = url.replace(/\/+$/, "").split("#")[0];
+    const parts = trimmed.split("/");
+    return parts[parts.length - 1] || "";
+  },
+
+  cleanImageUrl(url) {
+    if (!url) return "";
+    let cleaned = url.trim();
+    if (/loading\.gif/i.test(cleaned)) return "";
+    if (cleaned.includes("/_next/image/")) {
+      const match = cleaned.match(/url=([^&]+)/);
+      if (match) {
+        try {
+          cleaned = decodeURIComponent(match[1]);
+        } catch {}
+      }
+    }
+    if (cleaned.startsWith("//")) cleaned = `https:${cleaned}`;
+    if (cleaned.startsWith("/")) cleaned = `${this.baseUrl}${cleaned}`;
+    cleaned = cleaned.replace(/-\d+x\d+(?=\.[a-zA-Z]+(\?|$))/, "");
+    cleaned = cleaned.replace(/\?(?:resize|w|h|fit|quality|strip)=[^&]+/gi, "");
+    cleaned = cleaned.replace(/[?&]$/, "");
+    return cleaned;
+  },
+
+  parseSearchHtml(html) {
+    const results = [];
+    const seen = new Set();
+    const blocks = html.split(/<article\b/i).slice(1);
+
+    for (const block of blocks) {
+      const linkMatch =
+        /<a[^>]+class=['"][^'"]*card-title[^'"]*['"][^>]+href=['"]([^'"]+)['"][^>]*>([\s\S]*?)<\/a>/i.exec(block) ||
+        /<h2[^>]*><a[^>]+href=['"]([^'"]*nimegami\.id\/[^'"]+)['"][^>]*>([\s\S]*?)<\/a><\/h2>/i.exec(block) ||
+        /<a[^>]+href=['"]([^'"]+)['"][^>]*>([\s\S]*?)<\/a>/i.exec(block);
+      if (!linkMatch) continue;
+
+      const href = linkMatch[1];
+      const slug = this.extractSlug(href);
+      if (!slug || seen.has(slug)) continue;
+      seen.add(slug);
+
+      const title = this.cleanTitle(linkMatch[2]);
+      if (!title) continue;
+
+      const imgMatch =
+        /<img[^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(block) ||
+        /<img[^>]+srcSet=['"]([^'"]+)['"]/i.exec(block);
+      let rawImg = imgMatch ? imgMatch[1] : undefined;
+      if (rawImg && rawImg.includes(" ")) {
+        rawImg = rawImg.split(/\s+/)[0];
+      }
+      const coverImage = rawImg ? this.cleanImageUrl(rawImg) : undefined;
+
+      const scoreMatch =
+        /class=['"][^'"]*score-badge[^'"]*['"][^>]*>([\s\S]*?)<\/span>/i.exec(block) ||
+        /class=['"][^'"]*rating-archive[^'"]*['"][^>]*>([\s\S]*?)<\/div>/i.exec(block);
+      const scoreText = scoreMatch ? scoreMatch[1].replace(/<[^>]+>/g, "").trim() : "";
+      const ratingVal = scoreText ? parseFloat(/\b(\d+(?:\.\d+)?)\b/.exec(scoreText)?.[1] || "0") : undefined;
+
+      const epMatch =
+        /class=['"][^'"]*card-last-episode[^'"]*['"][^>]*>([\s\S]*?)<\/p>/i.exec(block) ||
+        /class=['"][^'"]*eps-archive[^'"]*['"][^>]*>([\s\S]*?)<\/div>/i.exec(block);
+      let latestEpisode;
+      if (epMatch) {
+        const strongMatch = /<strong>([^<]+)<\/strong>/i.exec(epMatch[1]);
+        latestEpisode = strongMatch ? `Episode ${strongMatch[1].trim()}` : epMatch[1].replace(/<[^>]+>/g, "").trim();
+      }
+
+      const isOngoing = /ongoing/i.test(block);
+      const status = isOngoing ? "Ongoing" : "Completed";
+
+      results.push({
+        sourceId: slug,
+        provider: "nimegami",
+        title,
+        coverImage,
+        rating: ratingVal || undefined,
+        latestEpisode,
+        status,
+        type: "TV",
+      });
+    }
+
+    return results;
+  },
+
+  async getLatest(page = 1) {
+    const pagePath = page > 1 ? `/page/${page}/` : "/";
+    const html = await fetchHtml(`${this.baseUrl}${pagePath}`);
+    return this.parseSearchHtml(html);
+  },
+
+  async getFeed() {
+    const items = await this.getLatest(1);
+    return {
+      featured: items.slice(0, 5),
+      spotlight: items.slice(0, 3),
+      popular: items.slice(0, 10),
+      latestEpisodes: items.slice(0, 15),
+      ongoing: items.filter((i) => i.status?.toLowerCase() === "ongoing"),
+      completed: items.filter((i) => i.status?.toLowerCase() === "completed"),
+    };
+  },
+
+  async search(query, page = 1) {
+    const pagePath = page > 1 ? `/page/${page}` : "";
+    const url = `${this.baseUrl}${pagePath}/?s=${encodeURIComponent(query)}&post_type=anime`;
+    const html = await fetchHtml(url);
+    return this.parseSearchHtml(html);
+  },
+
+  async getDetail(slug) {
+    const cleanSlug = this.extractSlug(slug);
+    const detailUrl = slug.startsWith("http") ? slug : `${this.baseUrl}/${cleanSlug}/`;
+    const html = await fetchHtml(detailUrl);
+
+    const titleMatch =
+      /<h1 class=['"][^'"]*entry-title[^'"]*['"][^>]*>([\s\S]*?)<\/h1>/i.exec(html) ||
+      /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
+    const title = this.cleanTitle(titleMatch ? titleMatch[1] : cleanSlug);
+
+    const coverMatch =
+      /<div class=['"][^'"]*foto_anime[^'"]*['"][^>]*>[\s\S]*?<img[^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(html) ||
+      /<div class=['"][^'"]*entry-content[^'"]*['"][^>]*>[\s\S]*?<img[^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(html) ||
+      /<img[^>]+class=['"][^'"]*poster-image[^'"]*['"][^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(html);
+    const coverImage = coverMatch ? this.cleanImageUrl(coverMatch[1]) : undefined;
+
+    let synopsis;
+    const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+    let pMatch;
+    while ((pMatch = pRegex.exec(html)) !== null) {
+      const text = pMatch[1].replace(/<[^>]+>/g, "").trim();
+      if (text.length > 50 && !/server streaming|download aj dlu/i.test(text) && !synopsis) {
+        synopsis = text;
+        break;
+      }
+    }
+
+    const genres = [];
+    const genreRegex = /<a[^>]+href=['"][^'"]*\/genre[s]?\/[^'"]+['"][^>]*>([^<]+)<\/a>/gi;
+    let gMatch;
+    while ((gMatch = genreRegex.exec(html)) !== null) {
+      const g = gMatch[1].trim();
+      if (g && !genres.includes(g)) genres.push(g);
+    }
+
+    const isOngoing = /ongoing/i.test(html);
+    const status = isOngoing ? "Ongoing" : "Completed";
+
+    const episodes = [];
+    const nextEpRegex = /<a[^>]+href=['"]#episode_(\d+)['"][^>]*>([\s\S]*?)<\/a>/gi;
+    let nepMatch;
+    while ((nepMatch = nextEpRegex.exec(html)) !== null) {
+      const epNum = parseInt(nepMatch[1], 10);
+      const providerEpisodeUrl = `${this.baseUrl}/${cleanSlug}/#episode_${epNum}`;
+      episodes.push({
+        episodeNumber: epNum,
+        episodeLabel: `Episode ${epNum}`,
+        providerEpisodeUrl,
+      });
+    }
+
+    if (episodes.length === 0) {
+      const epRegex = /<li[^>]+id=['"]([^'"]*)['"][^>]*data=['"]([^'"]*)['"][^>]*>([\s\S]*?)<\/li>/gi;
+      let epMatch;
+      let idx = 1;
+      while ((epMatch = epRegex.exec(html)) !== null) {
+        const idAttr = epMatch[1];
+        const dataAttr = epMatch[2];
+        const text = epMatch[3].replace(/<[^>]+>/g, "").trim();
+        const numMatch = /(\d+)/.exec(text) || /(\d+)/.exec(idAttr);
+        const epNum = numMatch ? parseInt(numMatch[1], 10) : idx;
+        const providerEpisodeUrl = `${this.baseUrl}/${cleanSlug}/#ep=${epNum}`;
+
+        episodes.push({
+          episodeNumber: epNum,
+          episodeLabel: text || `Episode ${epNum}`,
+          providerEpisodeUrl,
+          data: dataAttr || undefined,
+        });
+        idx++;
+      }
+    }
+
+    episodes.sort((a, b) => (a.episodeNumber || 0) - (b.episodeNumber || 0));
+
+    return {
+      sourceId: cleanSlug,
+      provider: "nimegami",
+      title,
+      synopsis,
+      coverImage,
+      status,
+      type: "TV",
+      genres,
+      episodes,
+    };
+  },
+
+  async getEpisodeStreams(targetUrl) {
+    if (targetUrl.includes("/streaming/")) {
+      const fullUrl = targetUrl.startsWith("http") ? targetUrl : `${this.baseUrl}${targetUrl.startsWith("/") ? "" : "/"}${targetUrl}`;
+      try {
+        const html = await fetchHtml(fullUrl);
+        const playerMatch = /<main id=['"]player['"][^>]*data-src=['"]([^'"]+)['"][^>]*data-quality=['"]([^'"]*)['"]/i.exec(html);
+        if (playerMatch && playerMatch[1]) {
+          const directUrl = playerMatch[1].trim();
+          const q = playerMatch[2] || "720p";
+          return [{
+            server: `Nimegami ${q} (Direct)`,
+            type: directUrl.includes(".m3u8") ? "m3u8" : "mp4",
+            url: directUrl,
+            quality: q,
+            isEmbed: false,
+            headers: { Referer: fullUrl },
+          }];
+        }
+      } catch {}
+    }
+
+    const [animePageUrl, hash] = targetUrl.split("#");
+    const epNumMatch = hash?.match(/ep(?:isode)?[=_](\d+)/i);
+    const targetEpNum = epNumMatch ? parseInt(epNumMatch[1], 10) : 1;
+
+    let html = "";
+    try {
+      html = await fetchHtml(animePageUrl);
+    } catch {
+      return [];
+    }
+
+    const streams = [];
+    const serverButtons = html.match(/<button[^>]+data-media-id=['"]([^'"]+)['"][^>]*aria-label=['"]([^'"]+)['"][^>]*>/gi);
+    if (serverButtons && serverButtons.length > 0) {
+      const slug = this.extractSlug(animePageUrl);
+      for (const btn of serverButtons) {
+        const idMatch = /data-media-id=['"]([^'"]+)['"]/i.exec(btn);
+        const labelMatch = /aria-label=['"]([^'"]+)['"]/i.exec(btn);
+        if (!idMatch) continue;
+        const mediaId = idMatch[1];
+        const label = labelMatch ? labelMatch[1] : "Nimegami";
+        const qMatch = label.match(/\b(1080p|720p|480p|360p)\b/i);
+        const quality = qMatch ? qMatch[1] : "720p";
+
+        if (streams.length < 2) {
+          const streamUrl = `${this.baseUrl}/${slug}/streaming/${targetEpNum}/${quality}/${mediaId}/`;
+          try {
+            const streamHtml = await fetchHtml(streamUrl);
+            const playerMatch = /<main id=['"]player['"][^>]*data-src=['"]([^'"]+)['"]/i.exec(streamHtml);
+            if (playerMatch && playerMatch[1]) {
+              streams.push({
+                server: `Nimegami ${label} (Direct)`,
+                type: playerMatch[1].includes(".m3u8") ? "m3u8" : "mp4",
+                url: playerMatch[1].trim(),
+                quality,
+                isEmbed: false,
+                headers: { Referer: streamUrl },
+              });
+              continue;
+            }
+          } catch {}
+        }
+
+        streams.push({
+          server: `Nimegami ${label} (Player)`,
+          type: "embed",
+          url: `${this.baseUrl}/${slug}/streaming/${targetEpNum}/${quality}/${mediaId}/`,
+          quality,
+          isEmbed: true,
+          headers: { Referer: animePageUrl },
+        });
+      }
+    }
+
+    if (streams.length === 0) {
+      const epRegex = /<li[^>]+id=['"]([^'"]*)['"][^>]*data=['"]([^'"]*)['"][^>]*>([\s\S]*?)<\/li>/gi;
+      let epMatch;
+      let base64Data;
+      let idx = 1;
+      while ((epMatch = epRegex.exec(html)) !== null) {
+        const idAttr = epMatch[1];
+        const dataAttr = epMatch[2];
+        const numMatch = /(\d+)/.exec(epMatch[3]) || /(\d+)/.exec(idAttr);
+        const currentNum = numMatch ? parseInt(numMatch[1], 10) : idx;
+        if (dataAttr && (targetEpNum === null || currentNum === targetEpNum)) {
+          base64Data = dataAttr;
+          break;
+        }
+        idx++;
+      }
+
+      if (base64Data) {
+        try {
+          const decoded = atob(base64Data);
+          const parsed = JSON.parse(decoded);
+          if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+              const format = item.format || "720p";
+              const urls = Array.isArray(item.url) ? item.url : [];
+              for (const u of urls) {
+                if (!u || typeof u !== "string") continue;
+                const isEmbed = !u.includes(".mp4") && !u.includes(".m3u8");
+                streams.push({
+                  server: isEmbed ? `Nimegami ${format} (Embed)` : `Nimegami ${format} (Direct)`,
+                  type: isEmbed ? "embed" : (u.includes(".m3u8") ? "m3u8" : "mp4"),
+                  url: u.trim(),
+                  quality: format,
+                  isEmbed,
+                  headers: { Referer: "https://nimegami.id/" },
+                });
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    return streams;
+  },
+};
+
 // ----------------------------------------------------------------------------
 // Main Handler
 // ----------------------------------------------------------------------------
@@ -1996,7 +2336,7 @@ export default async function handler(req) {
       status: "operational",
       uptime: "healthy",
       manga_providers: ["komikindo", "bacakomik", "komiku"],
-      anime_providers: ["samehadaku", "otakudesu", "animeindo", "kuramanime"],
+      anime_providers: ["samehadaku", "otakudesu", "animeindo", "kuramanime", "nimegami"],
       endpoints: [
         "/api/:provider/search?q=:query",
         "/api/:provider/latest?page=:page",
@@ -2028,6 +2368,7 @@ export default async function handler(req) {
         case "otakudesu": return OtakudesuAnime;
         case "animeindo": return AnimeIndoAnime;
         case "kuramanime": return KuramanimeAnime;
+        case "nimegami": return NimegamiAnime;
         default: return null;
       }
     };
