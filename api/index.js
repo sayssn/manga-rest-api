@@ -1387,9 +1387,10 @@ function parseAnimeIndoArticles(htmlBlock) {
 
     const rawTitle = (ttMatch && ttMatch[1].trim()) || (h2Match && h2Match[1].trim()) || "";
     if (hrefMatch && rawTitle) {
-      const sourceId = parseSlug(hrefMatch[1])
+      let sourceId = parseSlug(hrefMatch[1])
         .replace(/-episode-\d+.*$/i, "")
         .replace(/-(?:sub-indo|subtitle-indonesia)$/i, "");
+      sourceId = sourceId.replace(/-s(\d+)$/i, "-season-$1");
       const title = cleanAnimeTitle(rawTitle);
       if (!sourceId || seen.has(sourceId) || isNsfwAnimeItem(title, sourceId)) continue;
       seen.add(sourceId);
@@ -1408,6 +1409,7 @@ function parseAnimeIndoArticles(htmlBlock) {
         latestEpisode,
         type: "TV",
         status: "Ongoing",
+        provider: "animeindo",
       });
     }
   }
@@ -1448,6 +1450,36 @@ const AnimeIndoAnime = {
       html = await fetchHtml(url);
     } catch {
       html = "";
+    }
+
+    // If /anime/{slug}/ not found or lacks episode list, test alternate season slug (-s2 <-> -season-2)
+    if (!/<div class=['"]eplister['"]/i.test(html)) {
+      const altSlug = /-s\d+/i.test(slug)
+        ? slug.replace(/-s(\d+)/i, "-season-$1")
+        : slug.replace(/-season-(\d+)/i, "-s$1");
+      if (altSlug !== slug) {
+        try {
+          const altHtml = await fetchHtml(`${this.baseUrl}/anime/${altSlug}/`);
+          if (/<div class=['"]eplister['"]/i.test(altHtml)) {
+            html = altHtml;
+          }
+        } catch {}
+      }
+    }
+
+    // If still missing, search AnimeIndo to locate canonical series URL
+    if (!/<div class=['"]eplister['"]/i.test(html)) {
+      try {
+        const query = slug.replace(/[-_]+/g, " ");
+        const searchHtml = await fetchHtml(`${this.baseUrl}/?s=${encodeURIComponent(query)}`);
+        const seriesMatch = /<a[^>]+href=['"]https:\/\/animeindo\.me\/anime\/([^\/'"]+)\/['"]/i.exec(searchHtml);
+        if (seriesMatch && seriesMatch[1] && seriesMatch[1] !== slug) {
+          const foundHtml = await fetchHtml(`${this.baseUrl}/anime/${seriesMatch[1]}/`);
+          if (/<div class=['"]eplister['"]/i.test(foundHtml)) {
+            html = foundHtml;
+          }
+        }
+      } catch {}
     }
 
     const titleMatch =
