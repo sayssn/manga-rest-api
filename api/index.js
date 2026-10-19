@@ -2811,17 +2811,20 @@ export default async function handler(req) {
       };
 
       try {
-        const [otakuRes, ongoingP1, ongoingP2, ongoingP3] = await Promise.allSettled([
+        const [otakuRes, ongoingP1, ongoingP2, ongoingP3, ongoingP4, ongoingP5, ongoingP6] = await Promise.allSettled([
           fetchHtml("https://otakudesu.blog/jadwal-rilis/"),
           fetchHtml("https://otakudesu.blog/ongoing-anime/"),
           fetchHtml("https://otakudesu.blog/ongoing-anime/page/2/"),
           fetchHtml("https://otakudesu.blog/ongoing-anime/page/3/"),
+          fetchHtml("https://otakudesu.blog/ongoing-anime/page/4/"),
+          fetchHtml("https://otakudesu.blog/ongoing-anime/page/5/"),
+          fetchHtml("https://otakudesu.blog/ongoing-anime/page/6/"),
         ]);
 
         const otakuHtml = otakuRes.status === "fulfilled" ? otakuRes.value : "";
         const ongoingCovers = new Map();
 
-        for (const p of [ongoingP1, ongoingP2, ongoingP3]) {
+        for (const p of [ongoingP1, ongoingP2, ongoingP3, ongoingP4, ongoingP5, ongoingP6]) {
           if (p.status !== "fulfilled" || !p.value) continue;
           const html = p.value;
           const venzStart = html.indexOf('class="venz"');
@@ -2870,16 +2873,20 @@ export default async function handler(req) {
               const sourceId = slugMatch ? slugMatch[1] : parseSlug(href);
 
               if (title && sourceId) {
-                // Filter out completed / batch entries
+                // Filter out completed / batch / end entries
                 if (
-                  /\b(?:tamat|completed|batch)\b/i.test(title) ||
-                  /(?:-|^)(?:tamat|completed|batch)(?:-|$)/i.test(sourceId)
+                  /\b(?:tamat|completed|batch|end)\b/i.test(title) ||
+                  /(?:-|^)(?:tamat|completed|batch|end)(?:-|$)/i.test(sourceId)
                 ) {
                   continue;
                 }
 
                 const norm = title.toLowerCase().replace(/[^a-z0-9]/g, "");
                 const matchedCover = ongoingCovers.get(sourceId) || ongoingCovers.get(norm);
+
+                if (matchedCover?.eps && /\b(?:end|tamat)\b/i.test(matchedCover.eps)) {
+                  continue;
+                }
 
                 schedule[targetDay].push({
                   id: sourceId,
@@ -2890,6 +2897,7 @@ export default async function handler(req) {
                   provider: "otakudesu",
                   coverImage: matchedCover?.cover || undefined,
                   latestEpisode: matchedCover?.eps || undefined,
+                  status: "ONGOING",
                 });
               }
             }
