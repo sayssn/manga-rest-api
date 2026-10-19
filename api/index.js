@@ -2493,6 +2493,100 @@ export default async function handler(req) {
       }
     }
 
+    // A6. Anime Schedule -> /api/anime/schedule
+    if (path === "/api/anime/schedule") {
+      const cacheKey = "anime:schedule";
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      const schedule = {
+        senin: [],
+        selasa: [],
+        rabu: [],
+        kamis: [],
+        jumat: [],
+        sabtu: [],
+        minggu: [],
+        random: [],
+      };
+
+      try {
+        const [otakuRes, animokRes] = await Promise.allSettled([
+          fetchHtml("https://otakudesu.blog/jadwal-rilis/"),
+          fetch("https://go.dashbursanime.my.id/api/v3/content/jadwal", {
+            headers: BROWSER_HEADERS,
+            signal: AbortSignal.timeout(6000),
+          }).then((r) => (r.ok ? r.json() : [])),
+        ]);
+
+        const otakuHtml = otakuRes.status === "fulfilled" ? otakuRes.value : "";
+        const animokData = animokRes.status === "fulfilled" && Array.isArray(animokRes.value) ? animokRes.value : [];
+
+        if (otakuHtml) {
+          const kgBlocks = otakuHtml.split(/<div class=['"]kglist321['"][^>]*>/i).slice(1);
+          for (const block of kgBlocks) {
+            const h2Match = /<h2[^>]*>([\s\S]*?)<\/h2>/i.exec(block);
+            if (!h2Match) continue;
+            const dayName = h2Match[1].replace(/<[^>]+>/g, "").trim().toLowerCase();
+            const targetDay = schedule[dayName] ? dayName : "random";
+
+            const aRegex = /<a[^>]+href=['"]([^'"]*\/anime\/[^'"]+)['"][^>]*>([\s\S]*?)<\/a>/gi;
+            let m;
+            while ((m = aRegex.exec(block)) !== null) {
+              const href = m[1];
+              const title = m[2].replace(/<[^>]+>/g, "").trim();
+              const slugMatch = href.match(/\/anime\/([^/]+)/);
+              const sourceId = slugMatch ? slugMatch[1] : parseSlug(href);
+              if (title && sourceId) {
+                schedule[targetDay].push({
+                  title,
+                  sourceId,
+                  provider: "otakudesu",
+                });
+              }
+            }
+          }
+        }
+
+        for (const item of animokData) {
+          const rawDay = (item.hari || "").toLowerCase().trim();
+          const targetDay = schedule[rawDay] ? rawDay : "random";
+          const title = item.title || item.nama || "";
+          const slug = item.slug || item.id || "";
+          if (!title) continue;
+
+          const exists = schedule[targetDay].some(
+            (s) => s.title.toLowerCase() === title.toLowerCase()
+          );
+          if (!exists) {
+            schedule[targetDay].push({
+              title,
+              sourceId: slug,
+              provider: "animok",
+              coverImage: item.cover || item.poster || undefined,
+              latestEpisode: item.episode || item.eps || undefined,
+            });
+          }
+        }
+
+        let total = 0;
+        for (const day of Object.keys(schedule)) {
+          total += schedule[day].length;
+        }
+
+        const result = {
+          status: "success",
+          total,
+          schedule,
+        };
+
+        setCached(cacheKey, result, 1800);
+        return jsonResponse(result);
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
     return jsonResponse({ error: "Anime endpoint not found" }, 404);
   }
 
