@@ -817,11 +817,17 @@ const SamehadakuAnime = {
     const ratingMatch = /Score\s*:\s*([0-9.]+)|Rating\s*:\s*([0-9.]+)/i.exec(html);
     const yearMatch = /\b(19\d\d|20\d\d)\b/.exec(html);
 
-    // Genres
+    // Genres - Scope extraction to details before sidebar/aside/footer
     const genres = [];
+    const mainSection = html.split(/<aside|<div[^>]+id=['"]sidebar|<div[^>]+class=['"][^'"]*sidebar|<footer/i)[0] || html;
+    const genreBlockMatch =
+      /<div class=['"]genre-info['"][^>]*>([\s\S]*?)<\/div>/i.exec(mainSection) ||
+      /<div class=['"]infox['"][^>]*>([\s\S]*?)<\/div>/i.exec(mainSection) ||
+      /<div class=['"]entry-content['"][^>]*>([\s\S]*?)<\/div>/i.exec(mainSection);
+    const genreSearchArea = genreBlockMatch ? genreBlockMatch[1] : mainSection;
     const genreRegex = /<a[^>]+href=['"][^'"]*\/genre\/[^'"]+['"][^>]*>([^<]+)<\/a>/gi;
     let gMatch;
-    while ((gMatch = genreRegex.exec(html)) !== null) {
+    while ((gMatch = genreRegex.exec(genreSearchArea)) !== null) {
       const g = gMatch[1].trim();
       if (g && !genres.includes(g)) genres.push(g);
     }
@@ -1086,6 +1092,8 @@ const OtakudesuAnime = {
     const titleMatch = /<b>Judul<\/b>:\s*([^<]+)/i.exec(html);
     const japMatch = /<b>Japanese<\/b>:\s*([^<]+)/i.exec(html);
     const statusMatch = /<b>Status<\/b>:\s*([^<]+)/i.exec(html);
+    const totalEpMatch = /<b>Total Episode<\/b>:\s*(\d+)/i.exec(html);
+    const totalEpisodes = totalEpMatch ? parseInt(totalEpMatch[1], 10) : undefined;
     const ratingMatch = /<b>Skor<\/b>:\s*([0-9.]+)/i.exec(html) || /<b>Rating<\/b>:\s*([0-9.]+)/i.exec(html);
     const imgMatch = /<div class=['"]fotoanime['"][^>]*>[\s\S]*?<img[^>]+src=['"]([^'"]+)['"]/i.exec(html);
     const synopsisMatch = /<div class=['"]sinopc['"][^>]*>([\s\S]*?)<\/div>/i.exec(html);
@@ -1126,6 +1134,15 @@ const OtakudesuAnime = {
 
     episodes.sort((a, b) => (a.episodeNumber || 0) - (b.episodeNumber || 0));
 
+    let status = statusMatch ? statusMatch[1].trim() : "Ongoing";
+    if (
+      status.toLowerCase() === "ongoing" &&
+      ((totalEpisodes && episodes.length >= totalEpisodes) ||
+        episodes.some((e) => /\b(?:end|tamat)\b/i.test(e.episodeLabel)))
+    ) {
+      status = "Completed";
+    }
+
     return {
       sourceId: slug,
       provider: "otakudesu",
@@ -1133,7 +1150,8 @@ const OtakudesuAnime = {
       japaneseTitle: japMatch ? japMatch[1].trim() : undefined,
       synopsis: synopsisMatch ? synopsisMatch[1].replace(/<[^>]+>/g, "").trim() : undefined,
       coverImage: sanitizeCover(imgMatch?.[1]),
-      status: statusMatch ? statusMatch[1].trim() : "Ongoing",
+      status,
+      totalEpisodes,
       type: "TV",
       rating: ratingMatch ? parseFloat(ratingMatch[1]) : undefined,
       genres,
@@ -2304,6 +2322,16 @@ const NimegamiAnime = {
     while ((gMatch = genreRegex.exec(html)) !== null) {
       const g = gMatch[1].trim();
       if (g && !genres.includes(g)) genres.push(g);
+    }
+    const genreTableMatch =
+      /<tr[^>]*>\s*<td[^>]*>(?:Genre|Kategori)<\/td>\s*<td[^>]*>:?\s*([\s\S]*?)<\/td>\s*<\/tr>/i.exec(html) ||
+      /(?:<b>|<strong>)(?:Genre|Kategori)\s*:?\s*(?:<\/b>|<\/strong>)\s*:?\s*([^<]+)/i.exec(html);
+    if (genreTableMatch) {
+      const rawGenreText = genreTableMatch[1].replace(/<[^>]+>/g, "").trim();
+      const splitGenres = rawGenreText.split(/[,|•\/]/).map((s) => s.trim()).filter(Boolean);
+      for (const g of splitGenres) {
+        if (!genres.includes(g)) genres.push(g);
+      }
     }
 
     const isOngoing = /ongoing/i.test(html);
