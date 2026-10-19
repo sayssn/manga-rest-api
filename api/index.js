@@ -2684,6 +2684,21 @@ export default async function handler(req) {
       const cached = getCached(cacheKey);
       if (cached) return jsonResponse(cached);
 
+      // 1. Try pre-computed enriched schedule from backend proxy (100% covers, genres, ratings, banners)
+      try {
+        const backendRes = await fetch("https://deimanga-proxy.saysnain.workers.dev/api/v1/anime/schedule", {
+          headers: BROWSER_HEADERS,
+          signal: AbortSignal.timeout(4000),
+        });
+        if (backendRes.ok) {
+          const backendData = await backendRes.json();
+          if (backendData && backendData.schedule && typeof backendData.total === "number" && backendData.total > 0) {
+            setCached(cacheKey, backendData, 1800);
+            return jsonResponse(backendData);
+          }
+        }
+      } catch {}
+
       const schedule = {
         senin: [],
         selasa: [],
