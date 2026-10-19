@@ -2635,7 +2635,7 @@ export default async function handler(req) {
     const animeEpisodeMatch = /^\/api\/anime\/([^\/]+)\/episode\/?(.*)$/i.exec(path);
     if (animeEpisodeMatch) {
       const providerName = animeEpisodeMatch[1];
-      let slug = animeEpisodeMatch[2];
+      let slug = animeEpisodeMatch[2] ? decodeURIComponent(animeEpisodeMatch[2]) : "";
       const targetUrl = url.searchParams.get("url") || "";
       const episodeTarget = targetUrl || slug;
       if (!episodeTarget) return jsonResponse({ error: "Missing episode slug or url" }, 400);
