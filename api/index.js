@@ -1117,7 +1117,7 @@ const OtakudesuAnime = {
       const epMatch = /<a[^>]+href=['"](https:\/\/otakudesu\.blog\/episode\/[^'"]+)['"][^>]*>([^<]+)<\/a>/i.exec(liBlock);
       if (!epMatch) continue;
       const epUrl = epMatch[1];
-      if (seenEpUrls.has(epUrl) || /batch/i.test(epUrl)) continue;
+      if (seenEpUrls.has(epUrl) || /batch/i.test(epUrl) || /pembatas/i.test(epUrl) || /dalam-proses/i.test(epUrl)) continue;
       seenEpUrls.add(epUrl);
       const epText = epMatch[2].trim();
       const dateMatch = /<span class=['"]zeebr['"][^>]*>([^<]+)<\/span>/i.exec(liBlock);
@@ -1251,7 +1251,7 @@ const OtakudesuAnime = {
             Referer: url,
           },
           body: `action=${nonceAction}`,
-          signal: AbortSignal.timeout(4000),
+          signal: AbortSignal.timeout(2500),
         });
         const nonceJson = await nonceRes.json();
         const nonce = nonceJson?.data;
@@ -1279,7 +1279,7 @@ const OtakudesuAnime = {
                       Referer: url,
                     },
                     body,
-                    signal: AbortSignal.timeout(4000),
+                    signal: AbortSignal.timeout(2500),
                   });
                   const j = await r.json();
                   if (j?.data) {
@@ -1295,7 +1295,7 @@ const OtakudesuAnime = {
             } catch {}
           }
           if (mirrorTasks.length > 0) {
-            const resolvedMirrors = await Promise.allSettled(mirrorTasks.slice(0, 8));
+            const resolvedMirrors = await Promise.allSettled(mirrorTasks.slice(0, 4));
             for (const res of resolvedMirrors) {
               if (res.status === "fulfilled" && res.value) {
                 const { label, q, src } = res.value;
