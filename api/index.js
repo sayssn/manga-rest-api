@@ -789,6 +789,7 @@ const SamehadakuAnime = {
             title: cleanAnimeTitle(titleMatch[1]),
             coverImage: sanitizeCover(imgMatch?.[1]),
             type: "TV",
+            provider: "samehadaku",
           });
         }
       }
@@ -1079,6 +1080,7 @@ const OtakudesuAnime = {
           rating: ratingMatch ? parseFloat(ratingMatch[1]) : undefined,
           status: statusMatch ? statusMatch[1].trim() : "Ongoing",
           type: "TV",
+          provider: "otakudesu",
         });
       }
     }
@@ -2656,6 +2658,46 @@ export default async function handler(req) {
       } catch (err) {
         return jsonResponse({ status: "error", message: err.message }, 502);
       }
+    }
+
+    // A0. Multi-Provider Anime Search -> /api/anime/search?q=... or /api/anime/all/search?q=...
+    if (path === "/api/anime/search" || path === "/api/anime/all/search") {
+      const q = url.searchParams.get("q") || "";
+      if (!q) return jsonResponse({ status: "success", items: [], total: 0 });
+      const cacheKey = `anime:search:multi:${q.toLowerCase()}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      const providers = [
+        { name: "otakudesu", impl: OtakudesuAnime },
+        { name: "animeindo", impl: AnimeIndoAnime },
+        { name: "samehadaku", impl: SamehadakuAnime },
+      ];
+      const results = await Promise.allSettled(
+        providers.map((p) => p.impl.search(q, 1).catch(() => []))
+      );
+      const combined = [];
+      const seen = new Set();
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        if (r.status === "fulfilled" && Array.isArray(r.value)) {
+          for (const item of r.value) {
+            const pName = item.provider || providers[i].name;
+            const key = `${pName}:${item.sourceId}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              combined.push({
+                ...item,
+                provider: pName,
+                id: item.id || `${pName}:${item.sourceId}`,
+              });
+            }
+          }
+        }
+      }
+      const payload = { status: "success", total: combined.length, items: combined };
+      setCached(cacheKey, payload, 600);
+      return jsonResponse(payload);
     }
 
     // A3. Anime Search -> /api/anime/:provider/search?q=...
