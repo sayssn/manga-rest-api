@@ -1139,6 +1139,8 @@ const OtakudesuAnime = {
 
     // Transparently backfill episode gaps from AnimeIndo for continuous series (e.g. One Piece 201-900)
     const CONTINUOUS_SERIES_MAP = {
+      "1piece-sub-indo": "one-piece",
+      "1piece": "one-piece",
       "one-piece-sub-indo": "one-piece",
       "one-piece": "one-piece",
       "detective-conan-sub-indo": "detective-conan",
@@ -1158,16 +1160,23 @@ const OtakudesuAnime = {
 
     if (isContinuous || hasGap) {
       try {
-        const indoDetail = await AnimeIndoAnime.getDetail(animeIndoSlug);
+        const indoDetail = await Promise.race([
+          AnimeIndoAnime.getDetail(animeIndoSlug),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("AnimeIndo backfill timeout")), 1500)),
+        ]);
         if (indoDetail && Array.isArray(indoDetail.episodes) && indoDetail.episodes.length > 0) {
           const existingNums = new Set(episodes.map((e) => e.episodeNumber).filter((n) => typeof n === "number"));
           for (const secEp of indoDetail.episodes) {
             if (typeof secEp.episodeNumber === "number" && !existingNums.has(secEp.episodeNumber)) {
+              const rawEpUrl = secEp.providerEpisodeUrl || secEp.url || "";
+              const epId = secEp.id && secEp.id.startsWith("animeindo:")
+                ? secEp.id
+                : (rawEpUrl ? `animeindo:${rawEpUrl}` : `animeindo:${animeIndoSlug}:${secEp.episodeNumber}`);
               episodes.push({
-                id: `animeindo:${animeIndoSlug}:${secEp.episodeNumber}`,
+                id: epId,
                 episodeNumber: secEp.episodeNumber,
                 episodeLabel: secEp.episodeLabel || `Episode ${secEp.episodeNumber}`,
-                providerEpisodeUrl: secEp.providerEpisodeUrl || secEp.url || "",
+                providerEpisodeUrl: rawEpUrl,
                 releaseDate: secEp.releaseDate,
               });
             }
@@ -1766,7 +1775,22 @@ const AnimeIndoAnime = {
   },
 
   async getEpisodeStreams(slugOrUrl) {
-    const url = slugOrUrl.startsWith("http") ? slugOrUrl : `${this.baseUrl}/${slugOrUrl}/`;
+    let resolved = slugOrUrl;
+    const compMatch =
+      String(slugOrUrl).match(/^([a-z0-9_-]+):([a-z0-9_-]+):(\d+)$/i) ||
+      String(slugOrUrl).match(/^([a-z0-9_-]+):(\d+)$/i);
+    if (compMatch) {
+      const seriesSlug = compMatch[2] ? compMatch[2] : compMatch[1];
+      const targetEpNum = parseInt(compMatch[2] ? compMatch[3] : compMatch[2], 10);
+      try {
+        const detail = await this.getDetail(seriesSlug);
+        const ep = detail.episodes?.find((e) => e.episodeNumber === targetEpNum);
+        if (ep && (ep.providerEpisodeUrl || ep.url)) {
+          resolved = ep.providerEpisodeUrl || ep.url;
+        }
+      } catch (e) {}
+    }
+    const url = resolved.startsWith("http") ? resolved : `${this.baseUrl}/${resolved.replace(/^\/+|\/+$/g, "")}/`;
     const html = await fetchHtml(url);
     const streams = [];
 
