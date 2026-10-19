@@ -1766,26 +1766,44 @@ const KuramanimeAnime = {
   },
 
   async getLatest(page = 1) {
-    const url = `${this.baseUrl}/quick/ongoing?order_by=updated&page=${page}`;
-    const html = await fetchHtml(url, this.headers);
-    return this.parseSearchHtml(html);
+    try {
+      const url = `${this.baseUrl}/quick/ongoing?order_by=updated&page=${page}`;
+      const html = await fetchHtml(url, this.headers);
+      return this.parseSearchHtml(html);
+    } catch {
+      return [];
+    }
   },
 
   async getFeed() {
-    const ongoing = await this.getLatest(1);
-    return {
-      featured: ongoing.slice(0, 5),
-      spotlight: ongoing.slice(0, 5),
-      latestEpisodes: ongoing,
-      ongoing: ongoing.slice(0, 15),
-      completed: [],
-    };
+    try {
+      const ongoing = await this.getLatest(1);
+      return {
+        featured: ongoing.slice(0, 5),
+        spotlight: ongoing.slice(0, 5),
+        latestEpisodes: ongoing,
+        ongoing: ongoing.slice(0, 15),
+        completed: [],
+      };
+    } catch {
+      return {
+        featured: [],
+        spotlight: [],
+        latestEpisodes: [],
+        ongoing: [],
+        completed: [],
+      };
+    }
   },
 
   async search(query, page = 1) {
-    const url = `${this.baseUrl}/anime?search=${encodeURIComponent(query)}&page=${page}`;
-    const html = await fetchHtml(url, this.headers);
-    return this.parseSearchHtml(html);
+    try {
+      const url = `${this.baseUrl}/anime?search=${encodeURIComponent(query)}&page=${page}`;
+      const html = await fetchHtml(url, this.headers);
+      return this.parseSearchHtml(html);
+    } catch {
+      return [];
+    }
   },
 
   async getDetail(slug) {
