@@ -1079,7 +1079,8 @@ const OtakudesuAnime = {
   },
 
   async getDetail(slug) {
-    const url = `${this.baseUrl}/anime/${slug}/`;
+    const cleanSlug = (slug || "").replace(/^[a-z0-9_-]+:/i, "").replace(/^\/+|\/+$/g, "");
+    const url = cleanSlug.startsWith("http") ? cleanSlug : `${this.baseUrl}/anime/${cleanSlug}/`;
     const html = await fetchHtml(url);
 
     const titleMatch = /<b>Judul<\/b>:\s*([^<]+)/i.exec(html);
@@ -1559,7 +1560,8 @@ const AnimeIndoAnime = {
   },
 
   async getDetail(slug) {
-    const url = `${this.baseUrl}/anime/${slug}/`;
+    const rawSlug = (slug || "").replace(/^[a-z0-9_-]+:/i, "").replace(/^\/+|\/+$/g, "");
+    const url = `${this.baseUrl}/anime/${rawSlug}/`;
     let html = "";
     try {
       html = await fetchHtml(url);
@@ -1569,9 +1571,9 @@ const AnimeIndoAnime = {
 
     // If /anime/{slug}/ not found or lacks episode list, test alternate season slug (-s2 <-> -season-2)
     if (!/<div class=['"]eplister['"]/i.test(html)) {
-      const altSlug = /-s\d+/i.test(slug)
-        ? slug.replace(/-s(\d+)/i, "-season-$1")
-        : slug.replace(/-season-(\d+)/i, "-s$1");
+      const altSlug = /-s\d+/i.test(rawSlug)
+        ? rawSlug.replace(/-s(\d+)/i, "-season-$1")
+        : rawSlug.replace(/-season-(\d+)/i, "-s$1");
       if (altSlug !== slug) {
         try {
           const altHtml = await fetchHtml(`${this.baseUrl}/anime/${altSlug}/`);
@@ -2610,21 +2612,27 @@ export default async function handler(req) {
     }
 
     // A4. Anime Detail -> /api/anime/:provider/detail/:slug
-    const animeDetailMatch = /^\/api\/anime\/([^\/]+)\/detail\/([^\/]+)$/i.exec(path);
+    const animeDetailMatch = /^\/api\/anime\/([^\/]+)\/detail\/?(.*)$/i.exec(path);
     if (animeDetailMatch) {
       const providerName = animeDetailMatch[1];
-      const slug = animeDetailMatch[2];
+      let slug = animeDetailMatch[2] ? decodeURIComponent(animeDetailMatch[2]) : "";
+      if (slug.toLowerCase().startsWith(`${providerName.toLowerCase()}:`)) {
+        slug = slug.slice(providerName.length + 1);
+      }
+      slug = slug.replace(/^[a-z0-9_-]+:/i, "").replace(/^\/+|\/+$/g, "");
       const provider = getAnimeProvider(providerName);
       if (!provider) return jsonResponse({ error: "Invalid anime provider" }, 400);
 
       const cacheKey = `anime:detail:${providerName}:${slug}`;
       const cached = getCached(cacheKey);
-      if (cached) return jsonResponse(cached);
+      if (cached && !url.searchParams.get("refresh")) return jsonResponse(cached);
 
       try {
         const data = await provider.getDetail(slug);
         const result = { status: "success", provider: providerName, data };
-        setCached(cacheKey, result, 1800);
+        if (data && data.episodes && data.episodes.length > 0) {
+          setCached(cacheKey, result, 1800);
+        }
         return jsonResponse(result);
       } catch (err) {
         return jsonResponse({ status: "error", message: err.message }, 502);

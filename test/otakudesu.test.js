@@ -32,3 +32,15 @@ test("Otakudesu episode stream: resolves streams for composite id otakudesu:fufu
   assert.ok(Array.isArray(data.streams));
   assert.ok(data.streams.length > 0, "Expected at least 1 stream source, got 0");
 });
+
+test("Otakudesu detail: resolves detail with composite prefix otakudesu:fufu-ijo-sub-indo", async () => {
+  const req = new Request("https://deimanga-rest-api.vercel.app/api/anime/otakudesu/detail/otakudesu:fufu-ijo-sub-indo?refresh=1");
+  const res = await handler(req);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.status, "success");
+  assert.ok(data.data);
+  assert.ok(data.data.episodes.length >= 12, "Expected 12 episodes, got " + data.data.episodes.length);
+  assert.ok(data.data.episodes[0].providerEpisodeUrl.includes("fikm-episode-1"));
+});
+
