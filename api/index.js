@@ -1127,9 +1127,12 @@ const OtakudesuAnime = {
       const rawDate = dateMatch ? dateMatch[1].trim() : undefined;
       const releaseDate = rawDate ? rawDate.replace(/,(\d)/, ", $1") : undefined;
       const num = extractEpisodeNumber(epText, epUrl);
+      const isEnded = /\b(?:end|tamat)\b/i.test(epText) || /\b(?:end|tamat)\b/i.test(epUrl);
       episodes.push({
         episodeNumber: num,
         episodeLabel: num ? `Episode ${num}` : epText,
+        rawTitle: epText,
+        isEnded,
         providerEpisodeUrl: epUrl,
         releaseDate: releaseDate || undefined,
       });
@@ -1189,10 +1192,12 @@ const OtakudesuAnime = {
     }
 
     let status = statusMatch ? statusMatch[1].trim() : "Ongoing";
+    const hasEndedEpisode = episodes.some(
+      (e) => e.isEnded || /\b(?:end|tamat)\b/i.test(e.episodeLabel || e.rawTitle || "")
+    );
     if (
       status.toLowerCase() === "ongoing" &&
-      ((totalEpisodes && episodes.length >= totalEpisodes) ||
-        episodes.some((e) => /\b(?:end|tamat)\b/i.test(e.episodeLabel)))
+      ((totalEpisodes && episodes.length >= totalEpisodes) || hasEndedEpisode)
     ) {
       status = "Completed";
     }
