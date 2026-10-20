@@ -695,6 +695,28 @@ function extractEpisodeNumber(text, url) {
   return undefined;
 }
 
+function isRecentlyActiveAiring(dateStr, eps) {
+  if (!dateStr) return true;
+  const parts = dateStr.trim().split(/\s+/);
+  if (parts.length < 2) return true;
+  const day = parseInt(parts[0], 10);
+  const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, mei: 4, jun: 5, jul: 6, agu: 7, sep: 8, okt: 9, nov: 10, des: 11 };
+  const month = monthMap[parts[1].toLowerCase().slice(0, 3)];
+  if (month === undefined) return true;
+  const now = new Date();
+  let year = now.getFullYear();
+  if (month > now.getMonth()) year -= 1;
+  const airDate = new Date(year, month, day);
+  const diffDays = (now.getTime() - airDate.getTime()) / (1000 * 60 * 60 * 24);
+  const epNum = parseInt((eps || "").replace(/[^0-9]/g, ""), 10);
+  // Season finales (ep 11-13 or 23-26) that aired over 7 days ago have concluded
+  if (!isNaN(epNum) && ((epNum >= 11 && epNum <= 13) || (epNum >= 23 && epNum <= 26)) && diffDays > 7) {
+    return false;
+  }
+  // Any anime that has not aired a new episode in over 14 days is not actively airing this season
+  return diffDays <= 14;
+}
+
 // 1. Samehadaku Provider
 const SamehadakuAnime = {
   baseUrl: "https://v2.samehadaku.how",
@@ -2824,7 +2846,7 @@ export default async function handler(req) {
 
     // A6. Anime Schedule -> /api/anime/schedule
     if (path === "/api/anime/schedule") {
-      const cacheKey = "anime:schedule:v6";
+      const cacheKey = "anime:schedule:v7";
       const isRefresh = url.searchParams.get("refresh") === "1";
       const cached = getCached(cacheKey);
       if (cached && !isRefresh) {
@@ -2870,6 +2892,7 @@ export default async function handler(req) {
             const titleMatch = /<h2[^>]*class=["']jdlflm["'][^>]*>([\s\S]*?)<\/h2>/i.exec(li);
             const epsMatch = /<div[^>]*class=["']epz["'][^>]*>([\s\S]*?)<\/div>/i.exec(li);
             const dayMatch = /<div[^>]*class=["']epztipe["'][^>]*>([\s\S]*?)<\/div>/i.exec(li);
+            const dateMatch = /<div[^>]*class=["']newnime["'][^>]*>([\s\S]*?)<\/div>/i.exec(li);
 
             if (hrefMatch && titleMatch && imgMatch) {
               const href = hrefMatch[1];
@@ -2877,6 +2900,7 @@ export default async function handler(req) {
               const sourceId = slugMatch ? slugMatch[1] : parseSlug(href);
               const title = titleMatch[1].replace(/<[^>]+>/g, "").trim();
               const eps = epsMatch ? epsMatch[1].replace(/<[^>]+>/g, "").trim() : "";
+              const dateStr = dateMatch ? dateMatch[1].replace(/<[^>]+>/g, "").trim() : "";
               const rawDay = dayMatch ? dayMatch[1].replace(/<[^>]+>/g, "").trim().toLowerCase() : "";
               const img = sanitizeCover(imgMatch[1]) || imgMatch[1];
 
@@ -2886,7 +2910,8 @@ export default async function handler(req) {
               if (
                 /\b(?:tamat|completed|batch|end)\b/i.test(title) ||
                 /(?:-|^)(?:tamat|completed|batch|end)(?:-|$)/i.test(sourceId) ||
-                /\b(?:end|tamat)\b/i.test(eps)
+                /\b(?:end|tamat)\b/i.test(eps) ||
+                !isRecentlyActiveAiring(dateStr, eps)
               ) {
                 continue;
               }
