@@ -2824,9 +2824,14 @@ export default async function handler(req) {
 
     // A6. Anime Schedule -> /api/anime/schedule
     if (path === "/api/anime/schedule") {
-      const cacheKey = "anime:schedule:v5";
+      const cacheKey = "anime:schedule:v6";
+      const isRefresh = url.searchParams.get("refresh") === "1";
       const cached = getCached(cacheKey);
-      if (cached) return jsonResponse(cached);
+      if (cached && !isRefresh) {
+        return jsonResponse(cached, 200, {
+          "Cache-Control": "public, s-maxage=1800, stale-while-revalidate=86400",
+        });
+      }
 
       const schedule = {
         senin: [],
@@ -2840,20 +2845,17 @@ export default async function handler(req) {
       };
 
       try {
-        const [otakuRes, ongoingP1, ongoingP2, ongoingP3, ongoingP4, ongoingP5, ongoingP6] = await Promise.allSettled([
-          fetchHtml("https://otakudesu.blog/jadwal-rilis/"),
+        const pages = await Promise.allSettled([
           fetchHtml("https://otakudesu.blog/ongoing-anime/"),
           fetchHtml("https://otakudesu.blog/ongoing-anime/page/2/"),
           fetchHtml("https://otakudesu.blog/ongoing-anime/page/3/"),
           fetchHtml("https://otakudesu.blog/ongoing-anime/page/4/"),
           fetchHtml("https://otakudesu.blog/ongoing-anime/page/5/"),
-          fetchHtml("https://otakudesu.blog/ongoing-anime/page/6/"),
         ]);
 
-        const otakuHtml = otakuRes.status === "fulfilled" ? otakuRes.value : "";
-        const ongoingCovers = new Map();
+        const seenSourceIds = new Set();
 
-        for (const p of [ongoingP1, ongoingP2, ongoingP3, ongoingP4, ongoingP5, ongoingP6]) {
+        for (const p of pages) {
           if (p.status !== "fulfilled" || !p.value) continue;
           const html = p.value;
           const venzStart = html.indexOf('class="venz"');
@@ -2867,68 +2869,44 @@ export default async function handler(req) {
             const imgMatch = /<img[^>]+src=["']([^"']+)["']/i.exec(li);
             const titleMatch = /<h2[^>]*class=["']jdlflm["'][^>]*>([\s\S]*?)<\/h2>/i.exec(li);
             const epsMatch = /<div[^>]*class=["']epz["'][^>]*>([\s\S]*?)<\/div>/i.exec(li);
+            const dayMatch = /<div[^>]*class=["']epztipe["'][^>]*>([\s\S]*?)<\/div>/i.exec(li);
 
-            if (hrefMatch) {
+            if (hrefMatch && titleMatch && imgMatch) {
               const href = hrefMatch[1];
               const slugMatch = href.match(/\/anime\/([^/]+)/);
-              const slug = slugMatch ? slugMatch[1] : parseSlug(href);
-              const img = imgMatch ? sanitizeCover(imgMatch[1]) || imgMatch[1] : "";
-              const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, "").trim() : "";
-              const eps = epsMatch ? epsMatch[1].replace(/<[^>]+>/g, "").trim() : "";
-
-              if (slug && img) {
-                ongoingCovers.set(slug, { cover: img, eps });
-                const norm = title.toLowerCase().replace(/[^a-z0-9]/g, "");
-                if (norm) ongoingCovers.set(norm, { cover: img, eps });
-              }
-            }
-          }
-        }
-
-        if (otakuHtml) {
-          const kgBlocks = otakuHtml.split(/<div class=['"]kglist321['"][^>]*>/i).slice(1);
-          for (const block of kgBlocks) {
-            const h2Match = /<h2[^>]*>([\s\S]*?)<\/h2>/i.exec(block);
-            if (!h2Match) continue;
-            const rawDay = h2Match[1].replace(/<[^>]+>/g, "").trim().toLowerCase();
-            const targetDay = schedule[rawDay] ? rawDay : "random";
-
-            const aRegex = /<a[^>]+href=['"]([^'"]*\/anime\/[^'"]+)['"][^>]*>([\s\S]*?)<\/a>/gi;
-            let m;
-            while ((m = aRegex.exec(block)) !== null) {
-              const href = m[1];
-              const title = m[2].replace(/<[^>]+>/g, "").trim();
-              const slugMatch = href.match(/\/anime\/([^/]+)/);
               const sourceId = slugMatch ? slugMatch[1] : parseSlug(href);
+              const title = titleMatch[1].replace(/<[^>]+>/g, "").trim();
+              const eps = epsMatch ? epsMatch[1].replace(/<[^>]+>/g, "").trim() : "";
+              const rawDay = dayMatch ? dayMatch[1].replace(/<[^>]+>/g, "").trim().toLowerCase() : "";
+              const img = sanitizeCover(imgMatch[1]) || imgMatch[1];
 
-              if (title && sourceId) {
-                // Filter out completed / batch / end entries
-                if (
-                  /\b(?:tamat|completed|batch|end)\b/i.test(title) ||
-                  /(?:-|^)(?:tamat|completed|batch|end)(?:-|$)/i.test(sourceId)
-                ) {
-                  continue;
-                }
+              if (!sourceId || seenSourceIds.has(sourceId)) continue;
 
-                const norm = title.toLowerCase().replace(/[^a-z0-9]/g, "");
-                const matchedCover = ongoingCovers.get(sourceId) || ongoingCovers.get(norm);
-
-                if (matchedCover?.eps && /\b(?:end|tamat)\b/i.test(matchedCover.eps)) {
-                  continue;
-                }
-
-                schedule[targetDay].push({
-                  id: sourceId,
-                  sourceId,
-                  title,
-                  day: targetDay,
-                  dayLabel: targetDay.charAt(0).toUpperCase() + targetDay.slice(1),
-                  provider: "otakudesu",
-                  coverImage: matchedCover?.cover || undefined,
-                  latestEpisode: matchedCover?.eps || undefined,
-                  status: "ONGOING",
-                });
+              // Filter out concluded / ended series
+              if (
+                /\b(?:tamat|completed|batch|end)\b/i.test(title) ||
+                /(?:-|^)(?:tamat|completed|batch|end)(?:-|$)/i.test(sourceId) ||
+                /\b(?:end|tamat)\b/i.test(eps)
+              ) {
+                continue;
               }
+
+              seenSourceIds.add(sourceId);
+
+              const cleanDay = rawDay.replace(/[^a-z]/g, "");
+              const targetDay = schedule[cleanDay] ? cleanDay : (schedule[rawDay] ? rawDay : "random");
+
+              schedule[targetDay].push({
+                id: sourceId,
+                sourceId,
+                title: cleanAnimeTitle(title),
+                day: targetDay,
+                dayLabel: targetDay.charAt(0).toUpperCase() + targetDay.slice(1),
+                provider: "otakudesu",
+                coverImage: img,
+                latestEpisode: eps || undefined,
+                status: "ONGOING",
+              });
             }
           }
         }
@@ -2950,7 +2928,9 @@ export default async function handler(req) {
         };
 
         setCached(cacheKey, result, 1800);
-        return jsonResponse(result);
+        return jsonResponse(result, 200, {
+          "Cache-Control": "public, s-maxage=1800, stale-while-revalidate=86400",
+        });
       } catch (err) {
         return jsonResponse({ status: "error", message: err.message }, 502);
       }
