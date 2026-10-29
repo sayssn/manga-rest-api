@@ -2605,6 +2605,64 @@ const NimegamiAnime = {
   },
 };
 
+// ============================================================================
+// LIGHT NOVEL PROVIDERS
+// ============================================================================
+const SakuraNovel = {
+  baseUrl: "https://api.konkon.id",
+
+  async getLatest(page = 1) {
+    const url = `${this.baseUrl}/api/novel/sakuranovel/latest?page=${page}`;
+    const res = await fetch(url, { headers: BROWSER_HEADERS });
+    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
+    const json = await res.json();
+    return json.data || [];
+  },
+
+  async getPopular(page = 1) {
+    const url = `${this.baseUrl}/api/novel/sakuranovel/popular?page=${page}`;
+    const res = await fetch(url, { headers: BROWSER_HEADERS });
+    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
+    const json = await res.json();
+    return json.data || [];
+  },
+
+  async getTrending(period = "mingguan", limit = 10) {
+    const url = `${this.baseUrl}/api/novel/trending?period=${encodeURIComponent(period)}&limit=${limit}`;
+    const res = await fetch(url, { headers: BROWSER_HEADERS });
+    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
+    const json = await res.json();
+    return json.data || [];
+  },
+
+  async search(query) {
+    if (!query) return [];
+    const url = `${this.baseUrl}/api/novel/sakuranovel/search?q=${encodeURIComponent(query)}`;
+    const res = await fetch(url, { headers: BROWSER_HEADERS });
+    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
+    const json = await res.json();
+    return json.data || [];
+  },
+
+  async getDetail(id) {
+    if (!id) throw new Error("Novel ID is required");
+    const url = `${this.baseUrl}/api/novel/sakuranovel/detail?id=${encodeURIComponent(id)}`;
+    const res = await fetch(url, { headers: BROWSER_HEADERS });
+    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
+    const json = await res.json();
+    return json.data || null;
+  },
+
+  async getChapter(id) {
+    if (!id) throw new Error("Chapter ID is required");
+    const url = `${this.baseUrl}/api/novel/sakuranovel/chapter?id=${encodeURIComponent(id)}`;
+    const res = await fetch(url, { headers: BROWSER_HEADERS });
+    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
+    const json = await res.json();
+    return json.data || null;
+  },
+};
+
 // ----------------------------------------------------------------------------
 // Main Handler
 // ----------------------------------------------------------------------------
@@ -2627,12 +2685,13 @@ export default async function handler(req) {
   // Health / Root
   if (path === "/" || path === "/health") {
     return jsonResponse({
-      name: "DeiManga REST API (Manga & Anime)",
+      name: "DeiManga REST API (Manga, Anime & Novel)",
       platform: "Vercel Edge (Singapore)",
       status: "operational",
       uptime: "healthy",
       manga_providers: ["komikindo", "bacakomik", "komiku"],
       anime_providers: ["samehadaku", "otakudesu", "animeindo", "kuramanime", "nimegami"],
+      novel_providers: ["sakuranovel"],
       endpoints: [
         "/api/:provider/search?q=:query",
         "/api/:provider/latest?page=:page",
@@ -2648,6 +2707,12 @@ export default async function handler(req) {
         "/api/anime/:provider/detail/:slug",
         "/api/anime/:provider/episode/:slug",
         "/api/anime/:provider/feed",
+        "/api/novel/:provider/latest?page=:page",
+        "/api/novel/:provider/popular?page=:page",
+        "/api/novel/trending?period=mingguan&limit=10",
+        "/api/novel/:provider/search?q=:query",
+        "/api/novel/:provider/detail/:id",
+        "/api/novel/:provider/chapter/:id",
         "/:provider/* (Raw Proxy)",
       ],
       timestamp: new Date().toISOString(),
@@ -2962,6 +3027,156 @@ export default async function handler(req) {
     }
 
     return jsonResponse({ error: "Anime endpoint not found" }, 404);
+  }
+
+  // ==========================================================================
+  // LIGHT NOVEL API ROUTES (/api/novel/...)
+  // ==========================================================================
+  if (path.startsWith("/api/novel/")) {
+    const getNovelProvider = (name) => {
+      switch (name?.toLowerCase()) {
+        case "sakuranovel": return SakuraNovel;
+        default: return SakuraNovel;
+      }
+    };
+
+    // N1. Trending Novels -> /api/novel/trending?period=mingguan&limit=10
+    if (path === "/api/novel/trending") {
+      const period = url.searchParams.get("period") || "mingguan";
+      const limit = parseInt(url.searchParams.get("limit") || "10", 10);
+      const cacheKey = `novel:trending:${period}:${limit}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const items = await SakuraNovel.getTrending(period, limit);
+        const result = { status: "success", provider: "sakuranovel", period, total: items.length, items };
+        setCached(cacheKey, result, 600);
+        return jsonResponse(result, 200, {
+          "Cache-Control": "public, s-maxage=600, stale-while-revalidate=3600",
+        });
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // N2. Novel Latest -> /api/novel/:provider/latest?page=1 or /api/novel/latest?page=1
+    const novelLatestMatch = /^\/api\/novel(?:\/([^\/]+))?\/latest$/i.exec(path);
+    if (novelLatestMatch) {
+      const providerName = novelLatestMatch[1] || "sakuranovel";
+      const provider = getNovelProvider(providerName);
+
+      const cacheKey = `novel:latest:${providerName}:${page}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const items = await provider.getLatest(page);
+        const result = { status: "success", provider: providerName, page, total: items.length, items };
+        setCached(cacheKey, result, 300);
+        return jsonResponse(result, 200, {
+          "Cache-Control": "public, s-maxage=300, stale-while-revalidate=1800",
+        });
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // N3. Novel Popular -> /api/novel/:provider/popular?page=1 or /api/novel/popular?page=1
+    const novelPopularMatch = /^\/api\/novel(?:\/([^\/]+))?\/popular$/i.exec(path);
+    if (novelPopularMatch) {
+      const providerName = novelPopularMatch[1] || "sakuranovel";
+      const provider = getNovelProvider(providerName);
+
+      const cacheKey = `novel:popular:${providerName}:${page}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const items = await provider.getPopular(page);
+        const result = { status: "success", provider: providerName, page, total: items.length, items };
+        setCached(cacheKey, result, 600);
+        return jsonResponse(result, 200, {
+          "Cache-Control": "public, s-maxage=600, stale-while-revalidate=3600",
+        });
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // N4. Novel Search -> /api/novel/:provider/search?q=... or /api/novel/search?q=...
+    const novelSearchMatch = /^\/api\/novel(?:\/([^\/]+))?\/search$/i.exec(path);
+    if (novelSearchMatch) {
+      const providerName = novelSearchMatch[1] || "sakuranovel";
+      const provider = getNovelProvider(providerName);
+      const q = url.searchParams.get("q") || "";
+      if (!q) return jsonResponse({ status: "success", provider: providerName, items: [], total: 0 });
+
+      const cacheKey = `novel:search:${providerName}:${q.toLowerCase()}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const items = await provider.search(q);
+        const result = { status: "success", provider: providerName, query: q, total: items.length, items };
+        setCached(cacheKey, result, 600);
+        return jsonResponse(result, 200, {
+          "Cache-Control": "public, s-maxage=600, stale-while-revalidate=1800",
+        });
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // N5. Novel Detail -> /api/novel/:provider/detail/:id or /api/novel/detail/:id or /api/novel/:provider/detail?id=:id
+    const novelDetailMatch = /^\/api\/novel(?:\/([^\/]+))?\/detail(?:\/([^\/]+))?$/i.exec(path);
+    if (novelDetailMatch) {
+      const providerName = novelDetailMatch[1] || "sakuranovel";
+      const id = novelDetailMatch[2] || url.searchParams.get("id");
+      if (!id) return jsonResponse({ error: "Novel ID is required" }, 400);
+
+      const provider = getNovelProvider(providerName);
+      const cacheKey = `novel:detail:${providerName}:${id}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const data = await provider.getDetail(id);
+        const result = { status: "success", provider: providerName, data };
+        setCached(cacheKey, result, 600);
+        return jsonResponse(result, 200, {
+          "Cache-Control": "public, s-maxage=600, stale-while-revalidate=86400",
+        });
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // N6. Novel Chapter Content -> /api/novel/:provider/chapter/:id or /api/novel/chapter/:id or /api/novel/:provider/chapter?id=:id
+    const novelChapterMatch = /^\/api\/novel(?:\/([^\/]+))?\/chapter(?:\/([^\/]+))?$/i.exec(path);
+    if (novelChapterMatch) {
+      const providerName = novelChapterMatch[1] || "sakuranovel";
+      const id = novelChapterMatch[2] || url.searchParams.get("id");
+      if (!id) return jsonResponse({ error: "Chapter ID is required" }, 400);
+
+      const provider = getNovelProvider(providerName);
+      const cacheKey = `novel:chapter:${providerName}:${id}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const data = await provider.getChapter(id);
+        const result = { status: "success", provider: providerName, data };
+        setCached(cacheKey, result, 86400);
+        return jsonResponse(result, 200, {
+          "Cache-Control": "public, s-maxage=86400, stale-while-revalidate=604800",
+        });
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    return jsonResponse({ error: "Novel endpoint not found" }, 404);
   }
 
   // ==========================================================================
