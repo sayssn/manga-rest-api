@@ -10,6 +10,17 @@ import {
   resolveCover,
 } from './sakuranovel-core.js';
 
+function sanitizeNovelMetadata(item) {
+  if (!item) return item;
+  const title = (item.title || item.name || '').toLowerCase();
+  // Fix known upstream MangaUpdates misidentification for Against the Gods (ATG)
+  if (title === 'atg - raw' || title === 'atg' || title.includes('against the gods')) {
+    item.cover = 'https://media.kitsu.app/manga/poster_images/54416/large.jpg';
+    item.genres = ['Action', 'Adventure', 'Fantasy', 'Harem', 'Martial Arts', 'Xianxia'];
+  }
+  return item;
+}
+
 const KONKON_BASE = 'https://api.konkon.id';
 const BROWSER_HEADERS = {
   'User-Agent':
@@ -36,7 +47,7 @@ export const SakuraNovel = {
       if (res.ok) {
         const json = await res.json();
         if (Array.isArray(json.data) && json.data.length > 0) {
-          return json.data;
+          return json.data.map(sanitizeNovelMetadata);
         }
       }
     } catch (err) {
@@ -84,7 +95,7 @@ export const SakuraNovel = {
       if (res.ok) {
         const json = await res.json();
         if (Array.isArray(json.data) && json.data.length > 0) {
-          return json.data;
+          return json.data.map(sanitizeNovelMetadata);
         }
       }
     } catch (err) {
@@ -137,7 +148,7 @@ export const SakuraNovel = {
       if (res.ok) {
         const json = await res.json();
         if (Array.isArray(json.data) && json.data.length > 0) {
-          return json.data;
+          return json.data.map(sanitizeNovelMetadata);
         }
       }
     } catch (err) {
@@ -161,7 +172,7 @@ export const SakuraNovel = {
       if (res.ok) {
         const json = await res.json();
         if (Array.isArray(json.data) && json.data.length > 0) {
-          return json.data;
+          return json.data.map(sanitizeNovelMetadata);
         }
       }
     } catch (err) {
@@ -211,7 +222,7 @@ export const SakuraNovel = {
       if (res.ok) {
         const json = await res.json();
         if (json.data && json.data.id) {
-          return json.data;
+          return sanitizeNovelMetadata(json.data);
         }
       }
     } catch (err) {
