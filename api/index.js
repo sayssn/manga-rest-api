@@ -3112,16 +3112,16 @@ export default async function handler(req) {
       if (!id) return jsonResponse({ error: "Novel ID is required" }, 400);
 
       const provider = getNovelProvider(providerName);
-      const cacheKey = `novel:detail:${providerName}:${id}`;
+      const cacheKey = `novel:detail:v3:${providerName}:${id}`;
       const cached = getCached(cacheKey);
       if (cached) return jsonResponse(cached);
 
       try {
         const data = await provider.getDetail(id);
         const result = { status: "success", provider: providerName, data };
-        setCached(cacheKey, result, 600);
+        setCached(cacheKey, result, 120);
         return jsonResponse(result, 200, {
-          "Cache-Control": "public, s-maxage=600, stale-while-revalidate=86400",
+          "Cache-Control": "public, s-maxage=120, stale-while-revalidate=86400",
         });
       } catch (err) {
         return jsonResponse({ status: "error", message: err.message }, 502);

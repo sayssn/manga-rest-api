@@ -70,20 +70,39 @@ export function cleanParagraphs(html) {
   return matches;
 }
 
-export function parseChapterMeta(post) {
+export function parseChapterMeta(post, index = 0) {
   const id = post.id;
   const slug = post.slug || '';
   const date = post.date || '';
   const rawTitle = post.title?.rendered || post.title || '';
   const cleanTitle = decodeHtmlEntities(rawTitle.replace(/<[^>]+>/g, ''));
 
-  // Extract chapter number: "Chapter 1", "Chapter 301", "Bab 1"
+  // 1. Extract chapter number from slug (e.g. -ch154-, -ch1-, -ch0-)
   let chapterNumber = '';
-  const chMatch = cleanTitle.match(/(?:Chapter|Bab)\s+(\d+(?:\.\d+)?)/i);
-  if (chMatch) {
-    chapterNumber = `Chapter ${chMatch[1]}`;
-  } else {
-    chapterNumber = `Chapter ${id}`;
+  const slugChMatch = slug.match(/[-_]ch(?:apter)?[-_]?(\d+(?:\.\d+)?)/i);
+  if (slugChMatch) {
+    chapterNumber = `Chapter ${slugChMatch[1]}`;
+  }
+
+  // 2. Extract chapter number from title: "Chapter 1", "Ch. 154", "Bab 1"
+  if (!chapterNumber) {
+    const chMatch = cleanTitle.match(/(?:Chapter|Bab|Ch\.?)\s*(\d+(?:\.\d+)?)/i);
+    if (chMatch) {
+      chapterNumber = `Chapter ${chMatch[1]}`;
+    }
+  }
+
+  // 3. Check for prologue / side story / epilogue
+  if (!chapterNumber) {
+    if (/side\s*story/i.test(cleanTitle) || /side\s*story/i.test(slug)) {
+      chapterNumber = 'Side Story';
+    } else if (/prologue/i.test(cleanTitle) || /prologue/i.test(slug)) {
+      chapterNumber = 'Prologue';
+    } else if (/epilogue/i.test(cleanTitle) || /epilogue/i.test(slug)) {
+      chapterNumber = 'Epilogue';
+    } else {
+      chapterNumber = `Chapter ${index + 1}`;
+    }
   }
 
   return {

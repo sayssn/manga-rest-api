@@ -18,6 +18,69 @@ function sanitizeNovelMetadata(item) {
     item.cover = 'https://media.kitsu.app/manga/poster_images/54416/large.jpg';
     item.genres = ['Action', 'Adventure', 'Fantasy', 'Harem', 'Martial Arts', 'Xianxia'];
   }
+
+  // Sanitize chapters list to ensure clean chapter numbers and titles
+  if (Array.isArray(item.chapters) && item.chapters.length > 0) {
+    const novelTitle = item.title || item.name || '';
+    const novelTitleRegex = novelTitle
+      ? new RegExp('^' + novelTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*', 'i')
+      : null;
+
+    item.chapters = item.chapters.map((ch, idx) => {
+      const rawNum = String(ch.chapter_number || '').trim();
+      const rawTitle = String(ch.title || '').trim();
+      const rawSlug = String(ch.slug || '').trim();
+
+      let num = '';
+      // 1. Extract from slug (e.g. -ch154-, -ch0-)
+      const slugMatch = rawSlug.match(/[-_]ch(?:apter)?[-_]?(\d+(?:\.\d+)?)/i);
+      if (slugMatch) num = slugMatch[1];
+
+      // 2. Extract from title / chapter_number
+      if (!num) {
+        const match = (rawTitle + ' ' + rawNum).match(/(?:Chapter|Bab|Ch\.?)\s*(\d+(?:\.\d+)?)/i);
+        if (match) num = match[1];
+      }
+
+      // 3. Fallback: only trust existing number if < 5000 (ignore WP post IDs like 368351)
+      if (!num) {
+        const numOnly = rawNum.replace(/[^0-9.]/g, '');
+        if (numOnly && Number(numOnly) < 5000) num = numOnly;
+      }
+
+      // 4. Fallback special types
+      if (!num) {
+        if (/side\s*story/i.test(rawTitle) || /side\s*story/i.test(rawSlug)) num = 'Side Story';
+        else if (/prologue/i.test(rawTitle) || /prologue/i.test(rawSlug)) num = 'Prologue';
+        else if (/epilogue/i.test(rawTitle) || /epilogue/i.test(rawSlug)) num = 'Epilogue';
+        else num = String(idx + 1);
+      }
+
+      // Clean title text
+      let cleanTitle = rawTitle;
+      if (novelTitleRegex) {
+        cleanTitle = cleanTitle.replace(novelTitleRegex, '');
+      }
+      cleanTitle = cleanTitle
+        .replace(/^(?:Chapter|Bab|Ch\.?)\s*\d+[\s):\-—–=]*/i, '')
+        .replace(/\s*Bahasa Indonesia\s*$/i, '')
+        .trim();
+
+      const isSpecial = num.startsWith('Side') || num.startsWith('Pro') || num.startsWith('Epi');
+      const formattedNum = isSpecial ? num : `Chapter ${num}`;
+
+      if (!cleanTitle || cleanTitle.toLowerCase() === 'chapter 1' || cleanTitle.toLowerCase() === rawNum.toLowerCase()) {
+        cleanTitle = formattedNum;
+      }
+
+      return {
+        ...ch,
+        chapter_number: formattedNum,
+        title: cleanTitle,
+      };
+    });
+  }
+
   return item;
 }
 
@@ -259,9 +322,9 @@ export const SakuraNovel = {
       }).catch(() => []),
     ]);
 
-    const chapters = (Array.isArray(posts) ? posts : []).map(parseChapterMeta);
+    const chapters = (Array.isArray(posts) ? posts : []).map((p, idx) => parseChapterMeta(p, idx));
 
-    return {
+    return sanitizeNovelMetadata({
       id: seriesId,
       title: seriesTitle,
       slug: seriesSlug,
@@ -274,7 +337,7 @@ export const SakuraNovel = {
       source: 'sakuranovel',
       total_chapters: totalChapters || chapters.length,
       chapters,
-    };
+    });
   },
 
   async getChapter(id) {
