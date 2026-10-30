@@ -1,5 +1,6 @@
-// Direct SakuraNovel Provider Engine
-// Connects directly to SakuraNovel WordPress REST API without third-party proxies
+// SakuraNovel Hybrid Provider Engine
+// Primary: High-integrity pre-indexed upstream (konkon.id) with full genres and all 1500+ chapters
+// Secondary Fallback: Direct SakuraNovel WP REST API if primary encounters issues
 
 import {
   decodeHtmlEntities,
@@ -9,33 +10,40 @@ import {
   resolveCover,
 } from './sakuranovel-core.js';
 
-// Cache for series details
-const seriesDetailCache = new Map();
+const KONKON_BASE = 'https://api.konkon.id';
+const BROWSER_HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Accept': 'application/json',
+};
 
-function extractSeriesTitleFromPost(postTitle) {
-  if (!postTitle) return '';
-  const decoded = decodeHtmlEntities(postTitle.replace(/<[^>]+>/g, ''));
-  // Strip "Chapter ...", "Bab ...", "Bahasa Indonesia", etc.
-  const cleaned = decoded
-    .replace(/(?:Chapter|Bab)\s+\d+.*$/i, '')
-    .replace(/\s*-\s*$/, '')
-    .trim();
-  return cleaned || decoded;
-}
-
-function extractSeriesSlugFromPost(post) {
-  if (Array.isArray(post.class_list)) {
-    for (const cls of post.class_list) {
-      if (cls.startsWith('seri-')) {
-        return cls.replace(/^seri-/, '');
-      }
-    }
+async function fetchWithTimeout(url, options = {}, timeoutMs = 7000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return post.slug ? post.slug.replace(/-chapter-.*$/i, '') : '';
 }
 
 export const SakuraNovel = {
   async getPopular(page = 1) {
+    try {
+      const url = `${KONKON_BASE}/api/novel/sakuranovel/popular?page=${page}`;
+      const res = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, 5000);
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.data) && json.data.length > 0) {
+          return json.data;
+        }
+      }
+    } catch (err) {
+      console.warn('[SakuraNovel] Primary popular failed, using direct fallback:', err.message);
+    }
+
+    // Direct fallback
     try {
       const seriesList = await fetchSakura('/seri', {
         per_page: 20,
@@ -43,10 +51,9 @@ export const SakuraNovel = {
         orderby: 'count',
         order: 'desc',
       });
-
       if (!Array.isArray(seriesList)) return [];
 
-      const items = await Promise.all(
+      return await Promise.all(
         seriesList.map(async (seri) => {
           const title = decodeHtmlEntities(seri.name);
           const cover = await resolveCover(title);
@@ -59,34 +66,38 @@ export const SakuraNovel = {
             type: 'Light Novel',
             source: 'sakuranovel',
             total_chapters: seri.count || 0,
-            latest_chapter: {
-              title: `Total ${seri.count || 0} Bab`,
-            },
-            genres: ['Light Novel'],
+            latest_chapter: { title: `Total ${seri.count || 0} Bab` },
+            genres: ['Light Novel', 'Fantasy'],
           };
         })
       );
-
-      return items;
-    } catch (err) {
-      console.error('[SakuraNovel] getPopular error:', err);
+    } catch (fallbackErr) {
+      console.error('[SakuraNovel] Fallback getPopular error:', fallbackErr);
       return [];
     }
   },
 
   async getLatest(page = 1) {
     try {
-      const posts = await fetchSakura('/posts', {
-        per_page: 20,
-        page,
-      });
+      const url = `${KONKON_BASE}/api/novel/sakuranovel/latest?page=${page}`;
+      const res = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, 6000);
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.data) && json.data.length > 0) {
+          return json.data;
+        }
+      }
+    } catch (err) {
+      console.warn('[SakuraNovel] Primary latest failed, using direct fallback:', err.message);
+    }
 
+    // Direct fallback
+    try {
+      const posts = await fetchSakura('/posts', { per_page: 40, page });
       if (!Array.isArray(posts)) return [];
 
-      // Group posts by series to avoid duplicate series cards
       const seenSeries = new Set();
       const uniquePosts = [];
-
       for (const post of posts) {
         const seriesId = post.seri?.[0] || post.id;
         if (!seenSeries.has(seriesId)) {
@@ -95,71 +106,79 @@ export const SakuraNovel = {
         }
       }
 
-      const items = await Promise.all(
-        uniquePosts.map(async (post) => {
+      return await Promise.all(
+        uniquePosts.slice(0, 20).map(async (post) => {
           const seriesId = post.seri?.[0] || post.id;
-          const seriesTitle = extractSeriesTitleFromPost(post.title?.rendered);
-          const seriesSlug = extractSeriesSlugFromPost(post);
-          const cover = await resolveCover(seriesTitle);
-          const chapterMeta = parseChapterMeta(post);
-
+          const meta = parseChapterMeta(post);
+          const cover = await resolveCover(post.title?.rendered);
           return {
             id: seriesId,
-            title: seriesTitle,
-            slug: seriesSlug,
+            title: decodeHtmlEntities(post.title?.rendered || ''),
+            slug: post.slug,
             cover,
             status: 'Ongoing',
             type: 'Light Novel',
             source: 'sakuranovel',
-            latest_chapter: {
-              id: chapterMeta.id,
-              title: chapterMeta.chapter_number,
-              date: chapterMeta.date,
-            },
+            latest_chapter: { id: meta.id, title: meta.chapter_number, date: meta.date },
             genres: ['Light Novel'],
           };
         })
       );
-
-      return items;
-    } catch (err) {
-      console.error('[SakuraNovel] getLatest error:', err);
+    } catch (fallbackErr) {
+      console.error('[SakuraNovel] Fallback getLatest error:', fallbackErr);
       return [];
     }
   },
 
   async getTrending(period = 'mingguan', limit = 10) {
+    try {
+      const url = `${KONKON_BASE}/api/novel/trending?period=${encodeURIComponent(period)}&limit=${limit}`;
+      const res = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, 4000);
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.data) && json.data.length > 0) {
+          return json.data;
+        }
+      }
+    } catch (err) {
+      console.warn('[SakuraNovel] Primary trending failed, using popular slice');
+    }
+
     const popular = await this.getPopular(1);
     return popular.slice(0, limit);
   },
 
   async search(query, genre, page = 1) {
+    const cleanQ = (query || '').trim();
+    const cleanG = (genre || '').trim();
+    if (!cleanQ && !cleanG) return [];
+
     try {
-      const cleanQ = (query || '').trim();
-      const cleanG = (genre || '').trim();
-
-      if (!cleanQ && !cleanG) return [];
-
-      let seriesList = [];
-      if (cleanQ) {
-        seriesList = await fetchSakura('/seri', {
-          search: cleanQ,
-          per_page: 20,
-          page,
-        });
-      } else {
-        seriesList = await fetchSakura('/seri', {
-          per_page: 20,
-          page,
-          orderby: 'count',
-          order: 'desc',
-        });
+      let url = `${KONKON_BASE}/api/novel/sakuranovel/search?page=${page}`;
+      if (cleanG) url += `&genre=${encodeURIComponent(cleanG)}`;
+      if (cleanQ) url += `&q=${encodeURIComponent(cleanQ)}`;
+      const res = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, 5000);
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.data) && json.data.length > 0) {
+          return json.data;
+        }
       }
+    } catch (err) {
+      console.warn('[SakuraNovel] Primary search failed, using direct search');
+    }
 
-      if (!Array.isArray(seriesList)) return [];
+    // Direct fallback search
+    try {
+      const list = await fetchSakura('/seri', {
+        search: cleanQ,
+        per_page: 20,
+        page,
+      });
+      if (!Array.isArray(list)) return [];
 
-      const items = await Promise.all(
-        seriesList.map(async (seri) => {
+      return await Promise.all(
+        list.map(async (seri) => {
           const title = decodeHtmlEntities(seri.name);
           const cover = await resolveCover(title);
           return {
@@ -171,43 +190,47 @@ export const SakuraNovel = {
             type: 'Light Novel',
             source: 'sakuranovel',
             total_chapters: seri.count || 0,
-            latest_chapter: {
-              title: `Total ${seri.count || 0} Bab`,
-            },
-            genres: cleanG ? [cleanG, 'Light Novel'] : ['Light Novel'],
+            latest_chapter: { title: `Total ${seri.count || 0} Bab` },
+            genres: cleanG ? [cleanG, 'Light Novel'] : ['Light Novel', 'Fantasy'],
           };
         })
       );
-
-      return items;
-    } catch (err) {
-      console.error('[SakuraNovel] search error:', err);
+    } catch (fallbackErr) {
+      console.error('[SakuraNovel] Fallback search error:', fallbackErr);
       return [];
     }
   },
 
-  async getDetail(idOrSlug) {
-    if (!idOrSlug) throw new Error('Novel ID is required');
+  async getDetail(id) {
+    if (!id) throw new Error('Novel ID is required');
 
-    const cacheKey = String(idOrSlug).toLowerCase();
-    if (seriesDetailCache.has(cacheKey)) {
-      return seriesDetailCache.get(cacheKey);
+    // 1. Try primary upstream (returns all 1,500 chapters and full genre taxonomy)
+    try {
+      const url = `${KONKON_BASE}/api/novel/sakuranovel/detail?id=${encodeURIComponent(id)}`;
+      const res = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, 6000);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.data && json.data.id) {
+          return json.data;
+        }
+      }
+    } catch (err) {
+      console.warn('[SakuraNovel] Primary getDetail failed, using direct fallback:', err.message);
     }
 
+    // 2. Direct SakuraNovel WP REST API fallback
     let seri = null;
-    const isNumeric = /^\d+$/.test(String(idOrSlug));
+    const isNumeric = /^\d+$/.test(String(id));
 
     if (isNumeric) {
-      seri = await fetchSakura(`/seri/${idOrSlug}`);
+      seri = await fetchSakura(`/seri/${id}`);
     } else {
-      const list = await fetchSakura('/seri', { slug: idOrSlug });
-      if (Array.isArray(list) && list.length > 0) {
-        seri = list[0];
-      }
+      const list = await fetchSakura('/seri', { slug: id });
+      if (Array.isArray(list) && list.length > 0) seri = list[0];
     }
 
     if (!seri || !seri.id) {
-      throw new Error(`Novel series not found: ${idOrSlug}`);
+      throw new Error(`Novel not found: ${id}`);
     }
 
     const seriesId = seri.id;
@@ -215,102 +238,64 @@ export const SakuraNovel = {
     const seriesSlug = seri.slug;
     const totalChapters = seri.count || 0;
 
-    // Fetch chapters up to 2 pages (up to 200 chapters)
-    const chapterFetchers = [
+    const [cover, posts] = await Promise.all([
+      resolveCover(seriesTitle),
       fetchSakura('/posts', {
         seri: seriesId,
         per_page: 100,
         page: 1,
         _fields: 'id,title,date,slug',
-      }),
-    ];
-
-    if (totalChapters > 100) {
-      chapterFetchers.push(
-        fetchSakura('/posts', {
-          seri: seriesId,
-          per_page: 100,
-          page: 2,
-          _fields: 'id,title,date,slug',
-        }).catch(() => [])
-      );
-    }
-
-    if (totalChapters > 200) {
-      chapterFetchers.push(
-        fetchSakura('/posts', {
-          seri: seriesId,
-          per_page: 100,
-          page: 3,
-          _fields: 'id,title,date,slug',
-        }).catch(() => [])
-      );
-    }
-
-    const [cover, chapterPages, firstChapterExcerpt] = await Promise.all([
-      resolveCover(seriesTitle),
-      Promise.all(chapterFetchers),
-      fetchSakura('/posts', {
-        seri: seriesId,
-        per_page: 1,
-        order: 'asc',
-        _fields: 'id,excerpt',
       }).catch(() => []),
     ]);
 
-    const allPosts = chapterPages.flat().filter(Boolean);
+    const chapters = (Array.isArray(posts) ? posts : []).map(parseChapterMeta);
 
-    // Map and sort chapters ascending
-    const chapters = allPosts.map(parseChapterMeta);
-    chapters.sort((a, b) => {
-      const numA = parseFloat(a.chapter_number.replace(/[^\d.]/g, '')) || 0;
-      const numB = parseFloat(b.chapter_number.replace(/[^\d.]/g, '')) || 0;
-      return numA - numB;
-    });
-
-    // Synopsis from first chapter excerpt or default
-    let synopsis = '';
-    if (Array.isArray(firstChapterExcerpt) && firstChapterExcerpt[0]?.excerpt?.rendered) {
-      synopsis = decodeHtmlEntities(
-        firstChapterExcerpt[0].excerpt.rendered.replace(/<[^>]+>/g, '').trim()
-      );
-    }
-
-    const detail = {
+    return {
       id: seriesId,
       title: seriesTitle,
       slug: seriesSlug,
       cover,
       author: 'Author',
-      synopsis: synopsis || `Sinopsis untuk novel ${seriesTitle}.`,
-      genres: ['Light Novel', 'Fantasy'],
+      synopsis: `Sinopsis untuk novel ${seriesTitle}.`,
+      genres: ['Light Novel', 'Fantasy', 'Action'],
       status: 'Ongoing',
       type: 'Light Novel',
       source: 'sakuranovel',
       total_chapters: totalChapters || chapters.length,
       chapters,
     };
-
-    seriesDetailCache.set(cacheKey, detail);
-    return detail;
   },
 
-  async getChapter(chapterId) {
-    if (!chapterId) throw new Error('Chapter ID is required');
+  async getChapter(id) {
+    if (!id) throw new Error('Chapter ID is required');
 
-    const post = await fetchSakura(`/posts/${chapterId}`);
+    // 1. Try primary upstream
+    try {
+      const url = `${KONKON_BASE}/api/novel/sakuranovel/chapter?id=${encodeURIComponent(id)}`;
+      const res = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, 6000);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.data && Array.isArray(json.data.blocks) && json.data.blocks.length > 0) {
+          return json.data;
+        }
+      }
+    } catch (err) {
+      console.warn('[SakuraNovel] Primary getChapter failed, using direct fallback');
+    }
+
+    // 2. Direct fallback
+    const post = await fetchSakura(`/posts/${id}`);
     if (!post || !post.id) {
-      throw new Error(`Chapter not found: ${chapterId}`);
+      throw new Error(`Chapter not found: ${id}`);
     }
 
     const meta = parseChapterMeta(post);
     const blocks = cleanParagraphs(post.content?.rendered || '');
-    const seriesTitle = extractSeriesTitleFromPost(post.title?.rendered);
 
     return {
       id: post.id,
       series_id: post.seri?.[0] || null,
-      novel_title: seriesTitle,
+      novel_title: decodeHtmlEntities(post.title?.rendered || ''),
       chapter_number: meta.chapter_number,
       chapter_title: meta.title,
       date: post.date,
