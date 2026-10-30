@@ -31,6 +31,47 @@ function sanitizeNovelMetadata(item) {
       const rawTitle = String(ch.title || '').trim();
       const rawSlug = String(ch.slug || '').trim();
 
+      // 0. Rich novel volume/part detection
+      const isRich = /volume|vol\.|part|prologue|epilogue|illustration/i.test(`${rawTitle} ${rawSlug}`);
+      if (isRich) {
+        let text = rawTitle.replace(/\s*Bahasa Indonesia\s*$/i, '').trim();
+        if (novelTitleRegex) text = text.replace(novelTitleRegex, '').trim();
+
+        const isCollapsed = !text || /^chapter\s+\d+$/i.test(text) || /^bab\s+\d+$/i.test(text);
+        if (isCollapsed && rawSlug) {
+          const s = rawSlug.replace(/[-_]bahasa[-_]indonesia$/i, '').replace(/[-_]raw$/i, '');
+          const richM = s.match(
+            /(volume[-_]\d+.*|prologue.*|epilogue.*|illustration.*|ch(?:apter)?[-_]?\d+.*|bab[-_]\d+.*|side[-_]story.*)/i
+          );
+          if (richM) text = richM[1].replace(/[-_]/g, ' ').trim();
+        }
+
+        const volM = text.match(
+          /(?:Vol(?:ume)?\.?\s*(\d+))\s*(?:(?:Ch(?:apter)?\.?|Bab)\s*(\d+(?:\.\d+)?))?\s*(?:Part\s*(\d+))?/i
+        );
+        const isEpi = /epilogue/i.test(text);
+        const isPro = /prologue/i.test(text);
+        const isIll = /illustration/i.test(text);
+        const isSide = /side\s*story/i.test(text);
+
+        if (volM?.[1]) {
+          let label = `Vol. ${volM[1]}`;
+          if (isIll) label += ' Illustration';
+          else if (isPro) label += ' Prologue';
+          else if (isEpi) label += ' Epilogue';
+          else if (isSide) label += ' Side Story';
+          else {
+            if (volM[2]) label += ` Ch. ${volM[2]}`;
+            if (volM[3]) label += ` Part ${volM[3]}`;
+          }
+          return {
+            ...ch,
+            chapter_number: label,
+            title: label,
+          };
+        }
+      }
+
       let num = '';
       // 1. Extract from slug (e.g. -ch154-, -ch0-)
       const slugMatch = rawSlug.match(/[-_]ch(?:apter)?[-_]?(\d+(?:\.\d+)?)/i);
