@@ -47,6 +47,29 @@ test('Novel: resolves novel search query', async () => {
   assert.ok(data.items.length > 0);
 });
 
+test('Novel: resolves novel search with genre parameter', async () => {
+  const req = new Request('https://deimanga-rest-api.vercel.app/api/novel/sakuranovel/search?genre=harem');
+  const res = await handler(req);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.status, 'success');
+  assert.equal(data.genre, 'harem');
+  assert.ok(Array.isArray(data.items));
+  assert.ok(data.items.length > 0);
+  assert.ok(data.items.some(it => (it.title || '').toLowerCase().includes('harem') || it.genres?.includes('harem')));
+});
+
+test('Novel: resolves novel genre direct route', async () => {
+  const req = new Request('https://deimanga-rest-api.vercel.app/api/novel/sakuranovel/genres/harem');
+  const res = await handler(req);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.status, 'success');
+  assert.equal(data.genre, 'harem');
+  assert.ok(Array.isArray(data.items));
+  assert.ok(data.items.length > 0);
+});
+
 test('Novel: resolves novel detail with chapters', async () => {
   const req = new Request('https://deimanga-rest-api.vercel.app/api/novel/sakuranovel/detail/1906');
   const res = await handler(req);

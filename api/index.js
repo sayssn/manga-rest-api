@@ -2635,9 +2635,11 @@ const SakuraNovel = {
     return json.data || [];
   },
 
-  async search(query) {
-    if (!query) return [];
-    const url = `${this.baseUrl}/api/novel/sakuranovel/search?q=${encodeURIComponent(query)}`;
+  async search(query, genre, page = 1) {
+    if (!query && !genre) return [];
+    let url = `${this.baseUrl}/api/novel/sakuranovel/search?page=${page}`;
+    if (genre) url += `&genre=${encodeURIComponent(genre)}`;
+    if (query) url += `&q=${encodeURIComponent(query)}`;
     const res = await fetch(url, { headers: BROWSER_HEADERS });
     if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
     const json = await res.json();
@@ -3110,15 +3112,41 @@ export default async function handler(req) {
       const providerName = novelSearchMatch[1] || "sakuranovel";
       const provider = getNovelProvider(providerName);
       const q = url.searchParams.get("q") || "";
-      if (!q) return jsonResponse({ status: "success", provider: providerName, items: [], total: 0 });
+      const genre = url.searchParams.get("genre") || "";
+      const page = parseInt(url.searchParams.get("page") || "1", 10);
+      if (!q && !genre) return jsonResponse({ status: "success", provider: providerName, items: [], total: 0 });
 
-      const cacheKey = `novel:search:${providerName}:${q.toLowerCase()}`;
+      const cacheKey = `novel:search:${providerName}:${(q || "").toLowerCase()}:${(genre || "").toLowerCase()}:${page}`;
       const cached = getCached(cacheKey);
       if (cached) return jsonResponse(cached);
 
       try {
-        const items = await provider.search(q);
-        const result = { status: "success", provider: providerName, query: q, total: items.length, items };
+        const items = await provider.search(q, genre, page);
+        const result = { status: "success", provider: providerName, query: q, genre, page, total: items.length, items };
+        setCached(cacheKey, result, 600);
+        return jsonResponse(result, 200, {
+          "Cache-Control": "public, s-maxage=600, stale-while-revalidate=1800",
+        });
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // N7. Novel Genre -> /api/novel/:provider/genres/:genre or /api/novel/genre/:genre
+    const novelGenreMatch = /^\/api\/novel(?:\/([^\/]+))?\/genres?\/([^\/]+)$/i.exec(path);
+    if (novelGenreMatch) {
+      const providerName = novelGenreMatch[1] || "sakuranovel";
+      const genre = decodeURIComponent(novelGenreMatch[2]);
+      const page = parseInt(url.searchParams.get("page") || "1", 10);
+      const provider = getNovelProvider(providerName);
+
+      const cacheKey = `novel:genre:${providerName}:${genre.toLowerCase()}:${page}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const items = await provider.search("", genre, page);
+        const result = { status: "success", provider: providerName, genre, page, total: items.length, items };
         setCached(cacheKey, result, 600);
         return jsonResponse(result, 200, {
           "Cache-Control": "public, s-maxage=600, stale-while-revalidate=1800",
