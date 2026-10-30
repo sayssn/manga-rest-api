@@ -4,6 +4,8 @@
 // Features: Search, Detail, Chapters, Reader, Latest, Manhwa, Manhua, Genres
 // ============================================================================
 
+import { SakuraNovel } from "./sakuranovel-provider.js";
+
 export const config = {
   runtime: "edge",
   regions: ["sin1"],
@@ -2606,64 +2608,10 @@ const NimegamiAnime = {
 };
 
 // ============================================================================
-// LIGHT NOVEL PROVIDERS
+// LIGHT NOVEL PROVIDERS (Direct Upstream Scraper - SakuraNovel)
 // ============================================================================
-const SakuraNovel = {
-  baseUrl: "https://api.konkon.id",
-
-  async getLatest(page = 1) {
-    const url = `${this.baseUrl}/api/novel/sakuranovel/latest?page=${page}`;
-    const res = await fetch(url, { headers: BROWSER_HEADERS });
-    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
-    const json = await res.json();
-    return json.data || [];
-  },
-
-  async getPopular(page = 1) {
-    const url = `${this.baseUrl}/api/novel/sakuranovel/popular?page=${page}`;
-    const res = await fetch(url, { headers: BROWSER_HEADERS });
-    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
-    const json = await res.json();
-    return json.data || [];
-  },
-
-  async getTrending(period = "mingguan", limit = 10) {
-    const url = `${this.baseUrl}/api/novel/trending?period=${encodeURIComponent(period)}&limit=${limit}`;
-    const res = await fetch(url, { headers: BROWSER_HEADERS });
-    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
-    const json = await res.json();
-    return json.data || [];
-  },
-
-  async search(query, genre, page = 1) {
-    if (!query && !genre) return [];
-    let url = `${this.baseUrl}/api/novel/sakuranovel/search?page=${page}`;
-    if (genre) url += `&genre=${encodeURIComponent(genre)}`;
-    if (query) url += `&q=${encodeURIComponent(query)}`;
-    const res = await fetch(url, { headers: BROWSER_HEADERS });
-    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
-    const json = await res.json();
-    return json.data || [];
-  },
-
-  async getDetail(id) {
-    if (!id) throw new Error("Novel ID is required");
-    const url = `${this.baseUrl}/api/novel/sakuranovel/detail?id=${encodeURIComponent(id)}`;
-    const res = await fetch(url, { headers: BROWSER_HEADERS });
-    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
-    const json = await res.json();
-    return json.data || null;
-  },
-
-  async getChapter(id) {
-    if (!id) throw new Error("Chapter ID is required");
-    const url = `${this.baseUrl}/api/novel/sakuranovel/chapter?id=${encodeURIComponent(id)}`;
-    const res = await fetch(url, { headers: BROWSER_HEADERS });
-    if (!res.ok) throw new Error(`Upstream Novel API HTTP ${res.status}`);
-    const json = await res.json();
-    return json.data || null;
-  },
-};
+// SakuraNovel provider engine is imported from ./sakuranovel-provider.js
+// It directly interfaces with SakuraNovel WordPress REST API without konkon.id
 
 // ----------------------------------------------------------------------------
 // Main Handler
