@@ -1575,6 +1575,39 @@ const OtakudesuAnime = {
       popular: items.slice(0, 10),
     };
   },
+
+  async getCatalog(page = 1, options = {}) {
+    const status = (options.status || "").toLowerCase();
+    const isCompleted = status === "completed" || status === "tamat";
+    const path = isCompleted ? "/complete-anime" : "/ongoing-anime";
+    const url = page > 1 ? `${this.baseUrl}${path}/page/${page}/` : `${this.baseUrl}${path}/`;
+    const html = await fetchHtml(url);
+    const items = [];
+    const itemRegex = /<li[^>]*>[\s\S]*?<div class=['"]detpost['"]>([\s\S]*?)<\/li>/gi;
+    let match;
+
+    while ((match = itemRegex.exec(html)) !== null) {
+      const block = match[1];
+      const hrefMatch = /href=['"]([^'"]+)['"]/i.exec(block);
+      const titleMatch = /<h2 class=['"]jdlflm['"][^>]*>([^<]+)<\/h2>/i.exec(block);
+      const imgMatch = /<img[^>]+src=['"]([^'"]+)['"]/i.exec(block);
+      const epMatch = /<div class=['"]epz['"][^>]*>([\s\S]*?)<\/div>/i.exec(block);
+
+      if (hrefMatch && titleMatch) {
+        const epClean = epMatch ? epMatch[1].replace(/<[^>]+>/g, "").trim() : undefined;
+        items.push({
+          sourceId: parseSlug(hrefMatch[1]),
+          title: cleanAnimeTitle(titleMatch[1]),
+          coverImage: sanitizeCover(imgMatch?.[1]),
+          latestEpisode: epClean,
+          type: "TV",
+          status: isCompleted ? "Completed" : "Ongoing",
+          provider: "otakudesu",
+        });
+      }
+    }
+    return items;
+  },
 };
 
 function isNsfwAnimeItem(title, sourceId) {
@@ -1974,6 +2007,67 @@ const AnimeIndoAnime = {
       ongoing: updateList.length >= 5 ? updateList.slice(0, 15) : latestEpisodes,
       popular: popularList.length >= 5 ? popularList.slice(0, 10) : popularToday,
     };
+  },
+
+  async getCatalog(page = 1, options = {}) {
+    const status = options.status;
+    const format = options.format || options.type;
+    const genre = options.genre;
+
+    let url;
+    if (genre) {
+      const genreSlug = genre.toLowerCase().trim().replace(/\s+/g, "-");
+      url = page > 1
+        ? `${this.baseUrl}/genres/${genreSlug}/page/${page}/`
+        : `${this.baseUrl}/genres/${genreSlug}/`;
+    } else {
+      const queryParams = [];
+      queryParams.push("order=update");
+      if (status && status !== "all") queryParams.push(`status=${encodeURIComponent(status)}`);
+      if (format && format !== "all") queryParams.push(`type=${encodeURIComponent(format)}`);
+      const qs = queryParams.length > 0 ? `?${queryParams.join("&")}` : "";
+      url = page > 1
+        ? `${this.baseUrl}/anime/page/${page}/${qs}`
+        : `${this.baseUrl}/anime/${qs}`;
+    }
+
+    const html = await fetchHtml(url);
+    const itemRegex = /<article class=['"]bs['"][^>]*>([\s\S]*?)<\/article>/gi;
+    let match;
+    const items = [];
+    const seen = new Set();
+
+    while ((match = itemRegex.exec(html)) !== null) {
+      const block = match[1];
+      const hrefMatch = /href=['"]([^'"]+)['"]/i.exec(block);
+      const h2Match = /<h2[^>]*>([^<]+)<\/h2>/i.exec(block);
+      const ttMatch = /<div class=['"]tt['"][^>]*>([\s\S]*?)<\/div>/i.exec(block);
+      const imgMatch = /data-src=['"]([^'"]+)['"]/i.exec(block) || /src=['"]([^'"]+)['"]/i.exec(block);
+      const typeMatch = /<(?:div|span) class=['"]typez[^'"]*['"][^>]*>([^<]+)<\/(?:div|span)>/i.exec(block);
+      const statusMatch = /<(?:div|span) class=['"]status[^'"]*['"][^>]*>([^<]+)<\/(?:div|span)>/i.exec(block);
+      const epMatch = /<(?:span|div) class=['"]epx['"][^>]*>([^<]+)<\/(?:span|div)>/i.exec(block);
+      const scoreMatch = /class=['"]score-badge['"][^>]*>[\s\S]*?([\d.]+)/i.exec(block);
+
+      const rawTitle = h2Match ? h2Match[1].trim() : (ttMatch ? ttMatch[1].replace(/<[^>]+>/g, '').replace(/[\d.]+\s*$/, '').trim() : '');
+      const title = cleanAnimeTitle(rawTitle);
+      const sourceId = hrefMatch ? hrefMatch[1].replace(/\/+$/, '').split('/').pop() : '';
+
+      if (!sourceId || seen.has(sourceId) || isNsfwAnimeItem(title, sourceId)) continue;
+      seen.add(sourceId);
+
+      items.push({
+        sourceId,
+        title,
+        coverImage: sanitizeCover(imgMatch?.[1]),
+        type: typeMatch?.[1]?.trim() || "TV",
+        status: statusMatch?.[1]?.trim() || "Ongoing",
+        latestEpisode: epMatch?.[1]?.trim(),
+        rating: scoreMatch ? parseFloat(scoreMatch[1]) : undefined,
+        provider: "animeindo",
+      });
+    }
+
+    return items;
   },
 };
 
@@ -2719,6 +2813,73 @@ export default async function handler(req) {
       try {
         const feed = await provider.getFeed();
         const result = { status: "success", provider: providerName, ...feed };
+        setCached(cacheKey, result, 300);
+        return jsonResponse(result);
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // A-Catalog. Anime Catalog -> /api/anime/:provider/catalog?page=1&status=...&format=...&genre=...
+    const animeCatalogMatch = /^\/api\/anime\/([^\/]+)\/catalog$/i.exec(path);
+    if (animeCatalogMatch) {
+      const providerName = animeCatalogMatch[1];
+      const provider = getAnimeProvider(providerName);
+      if (!provider) return jsonResponse({ error: "Invalid anime provider" }, 400);
+
+      const status = url.searchParams.get("status") || undefined;
+      const format = url.searchParams.get("format") || undefined;
+      const genre = url.searchParams.get("genre") || undefined;
+      const cacheKey = `anime:catalog:${providerName}:${page}:${status || "all"}:${format || "all"}:${genre || "all"}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const items = typeof provider.getCatalog === "function"
+          ? await provider.getCatalog(page, { status, format, genre })
+          : await provider.getLatest(page);
+
+        const result = {
+          status: "success",
+          provider: providerName,
+          page,
+          total: items.length,
+          hasMore: items.length >= 15,
+          items,
+        };
+        setCached(cacheKey, result, 300);
+        return jsonResponse(result);
+      } catch (err) {
+        return jsonResponse({ status: "error", message: err.message }, 502);
+      }
+    }
+
+    // A-MultiCatalog. Multi-Provider or Default Anime Catalog -> /api/anime/catalog
+    if (path === "/api/anime/catalog" || path === "/api/anime/all/catalog") {
+      const providerParam = url.searchParams.get("provider");
+      const providerName = providerParam && providerParam !== "all" ? providerParam : "animeindo";
+      const provider = getAnimeProvider(providerName) || AnimeIndoAnime;
+
+      const status = url.searchParams.get("status") || undefined;
+      const format = url.searchParams.get("format") || undefined;
+      const genre = url.searchParams.get("genre") || undefined;
+      const cacheKey = `anime:catalog:multi:${providerName}:${page}:${status || "all"}:${format || "all"}:${genre || "all"}`;
+      const cached = getCached(cacheKey);
+      if (cached) return jsonResponse(cached);
+
+      try {
+        const items = typeof provider.getCatalog === "function"
+          ? await provider.getCatalog(page, { status, format, genre })
+          : await provider.getLatest(page);
+
+        const result = {
+          status: "success",
+          provider: providerName,
+          page,
+          total: items.length,
+          hasMore: items.length >= 15,
+          items,
+        };
         setCached(cacheKey, result, 300);
         return jsonResponse(result);
       } catch (err) {
