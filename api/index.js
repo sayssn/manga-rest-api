@@ -1925,6 +1925,35 @@ const AnimeIndoAnime = {
       } catch {}
     }
 
+    if (streams.length === 0) {
+      const iframeRegex = /<iframe[^>]+(?:data-litespeed-src|data-src|src)=['"]([^'"]+)['"][^>]*>/gi;
+      let ifm;
+      while ((ifm = iframeRegex.exec(html)) !== null) {
+        const src = ifm[1].trim();
+        if (
+          src.startsWith("http") &&
+          !src.includes("google.com/recaptcha") &&
+          !src.includes("disqus.com") &&
+          !src.includes("facebook.com")
+        ) {
+          const isBlogger = src.includes("blogger.com/video.g");
+          const isMp4 = src.includes(".mp4");
+          const isM3u8 = src.includes(".m3u8");
+          streams.push({
+            server: isBlogger ? "AnimeIndo • Blogspot" : "AnimeIndo • Player",
+            type: isM3u8 ? "m3u8" : isMp4 ? "mp4" : "embed",
+            url: src,
+            quality: "720p",
+            isEmbed: !isMp4 && !isM3u8,
+            headers: {
+              Referer: `${this.baseUrl}/`,
+              "User-Agent": BROWSER_HEADERS["User-Agent"],
+            },
+          });
+        }
+      }
+    }
+
     return streams;
   },
 
