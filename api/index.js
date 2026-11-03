@@ -824,7 +824,23 @@ const SamehadakuAnime = {
   async getDetail(slug) {
     const cleanSlug = slug.replace(/-episode-\d+.*$/i, "");
     const url = cleanSlug.startsWith("http") ? cleanSlug : `${this.baseUrl}/anime/${cleanSlug}/`;
-    const html = await fetchHtml(url);
+    let html = "";
+    try {
+      html = await fetchHtml(url);
+    } catch {
+      html = "";
+    }
+
+    if (!html) {
+      const fallback = await AnimeIndoAnime.getDetail(cleanSlug).catch(() => null);
+      if (fallback) {
+        return {
+          ...fallback,
+          provider: "samehadaku",
+        };
+      }
+      throw new Error(`Failed to fetch Samehadaku detail for ${slug}`);
+    }
 
     const titleMatch =
       /<h1[^>]*itemprop=['"]headline['"][^>]*>([^<]+)<\/h1>/i.exec(html) ||
@@ -837,6 +853,9 @@ const SamehadakuAnime = {
       /<img[^>]+(?:data-src|src)=['"]([^'"]+)['"]/i.exec(html);
 
     const synopsisMatch =
+      /<div[^>]+class=['"][^'"]*(?:desc mindes|sinopsis|entry-content|description)[^'"]*['"][^>]*>([\s\S]*?)<\/div>/i.exec(html) ||
+      /<p[^>]+class=['"][^'"]*(?:leading-relaxed|desc|sinopsis)[^'"]*['"][^>]*>([\s\S]*?)<\/p>/i.exec(html) ||
+      /<(?:div|p)[^>]+itemprop=['"]description['"][^>]*>([\s\S]*?)<\/(?:div|p)>/i.exec(html) ||
       /<p class=['"]leading-relaxed['"][^>]*>([\s\S]*?)<\/p>/i.exec(html) ||
       /<div class=['"]entry-content['"][^>]*>([\s\S]*?)<\/div>/i.exec(html);
 
@@ -847,15 +866,37 @@ const SamehadakuAnime = {
     const genres = [];
     const mainSection = html.split(/<aside|<div[^>]+id=['"]sidebar|<div[^>]+class=['"][^'"]*sidebar|<footer/i)[0] || html;
     const genreBlockMatch =
-      /<div class=['"]genre-info['"][^>]*>([\s\S]*?)<\/div>/i.exec(mainSection) ||
-      /<div class=['"]infox['"][^>]*>([\s\S]*?)<\/div>/i.exec(mainSection) ||
+      /<div[^>]+class=['"][^'"]*(?:genre-info|genxed|infox|spe)[^'"]*['"][^>]*>([\s\S]*?)<\/div>/i.exec(mainSection) ||
       /<div class=['"]entry-content['"][^>]*>([\s\S]*?)<\/div>/i.exec(mainSection);
     const genreSearchArea = genreBlockMatch ? genreBlockMatch[1] : mainSection;
-    const genreRegex = /<a[^>]+href=['"][^'"]*\/genre\/[^'"]+['"][^>]*>([^<]+)<\/a>/gi;
+    const genreRegex = /<a[^>]+href=['"][^'"]*\/genres?\/[^'"]+['"][^>]*>([^<]+)<\/a>/gi;
     let gMatch;
     while ((gMatch = genreRegex.exec(genreSearchArea)) !== null) {
-      const g = gMatch[1].trim();
-      if (g && !genres.includes(g)) genres.push(g);
+      const g = gMatch[1].replace(/<[^>]+>/g, "").trim();
+      if (g && !genres.includes(g) && !/^(?:home|anime|daftar|all)$/i.test(g)) genres.push(g);
+    }
+    if (genres.length === 0) {
+      const tagRegex = /<a[^>]+rel=['"]tag['"][^>]*>([^<]+)<\/a>/gi;
+      while ((gMatch = tagRegex.exec(genreSearchArea)) !== null) {
+        const g = gMatch[1].replace(/<[^>]+>/g, "").trim();
+        if (g && !genres.includes(g) && !/^(?:home|anime|daftar|all)$/i.test(g)) genres.push(g);
+      }
+    }
+
+    let synopsisText = synopsisMatch ? synopsisMatch[1].replace(/<[^>]+>/g, "").trim() : undefined;
+    // Cross-enrich synopsis or genres from AnimeIndo if Samehadaku page was blocked by Cloudflare or lacked text
+    if (!synopsisText || genres.length === 0) {
+      try {
+        const fallbackIndo = await AnimeIndoAnime.getDetail(cleanSlug).catch(() => null);
+        if (fallbackIndo) {
+          if (!synopsisText && fallbackIndo.synopsis) {
+            synopsisText = fallbackIndo.synopsis;
+          }
+          if (genres.length === 0 && Array.isArray(fallbackIndo.genres) && fallbackIndo.genres.length > 0) {
+            genres.push(...fallbackIndo.genres);
+          }
+        }
+      } catch {}
     }
 
     // Episodes
@@ -910,7 +951,7 @@ const SamehadakuAnime = {
       sourceId: parseSlug(slug),
       provider: "samehadaku",
       title: titleMatch ? cleanAnimeTitle(titleMatch[1]) : parseSlug(slug),
-      synopsis: synopsisMatch ? synopsisMatch[1].replace(/<[^>]+>/g, "").trim() : undefined,
+      synopsis: synopsisText,
       coverImage: sanitizeCover(imgMatch?.[1]),
       status: /ongoing/i.test(html) ? "Ongoing" : "Completed",
       type: "TV",
