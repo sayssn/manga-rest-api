@@ -12,6 +12,9 @@ export const config = {
 };
 
 const memoryCache = new Map();
+export const inFlightHtml = new Map();
+export const htmlCache = new Map();
+let currentRequestContext = { pathname: "", isRefresh: false };
 
 function getCached(key) {
   const entry = memoryCache.get(key);
@@ -48,16 +51,44 @@ const BROWSER_HEADERS = {
   "Priority": "u=0, i",
 };
 
-async function fetchHtml(url, customHeaders) {
-  const res = await fetch(url, {
-    method: "GET",
-    headers: customHeaders || BROWSER_HEADERS,
-    redirect: "follow",
-  });
-  if (!res.ok) {
-    throw new Error(`Upstream HTTP Error ${res.status}: ${res.statusText}`);
+export async function fetchHtml(url, customHeaders, timeoutMs = 8000) {
+  const cached = htmlCache.get(url);
+  if (cached) {
+    if (Date.now() < cached.expiry) {
+      return cached.html;
+    }
+    htmlCache.delete(url);
   }
-  return await res.text();
+
+  if (inFlightHtml.has(url)) {
+    return await inFlightHtml.get(url);
+  }
+
+  const fetchPromise = (async () => {
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: customHeaders || BROWSER_HEADERS,
+        redirect: "follow",
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        throw new Error(`Upstream HTTP Error ${res.status}: ${res.statusText}`);
+      }
+      const html = await res.text();
+      if (htmlCache.size > 200) {
+        const firstKey = htmlCache.keys().next().value;
+        if (firstKey) htmlCache.delete(firstKey);
+      }
+      htmlCache.set(url, { html, expiry: Date.now() + 60000 });
+      return html;
+    } finally {
+      inFlightHtml.delete(url);
+    }
+  })();
+
+  inFlightHtml.set(url, fetchPromise);
+  return await fetchPromise;
 }
 
 function cleanTitle(raw) {
@@ -172,15 +203,77 @@ function parseDateToIso(rawDate) {
   return undefined;
 }
 
-function jsonResponse(data, status = 200, extraHeaders = {}) {
+export function cacheHeadersFor(pathname = "", isRefresh = false) {
+  if (
+    isRefresh === true ||
+    isRefresh === "1" ||
+    isRefresh === 1 ||
+    (typeof pathname === "string" && /[?&]refresh=1\b/i.test(pathname))
+  ) {
+    return "no-store";
+  }
+
+  const cleanPath = typeof pathname === "string" ? pathname.split("?")[0] : "";
+  if (!cleanPath) return null;
+
+  // Chapter Pages -> public, s-maxage=86400, stale-while-revalidate=604800
+  // Note: /chapter/:slug (single chapter reader pages) vs /chapters/:slug (chapter list)
+  if (/(?:\/chapter|\/pages?)(?:\/|$)/i.test(cleanPath) && !/\/chapters(?:\/|$)/i.test(cleanPath)) {
+    return "public, s-maxage=86400, stale-while-revalidate=604800";
+  }
+
+  // Detail / Manga / Chapters / Schedule -> public, s-maxage=1800, stale-while-revalidate=86400
+  if (/(?:\/detail|\/manga|\/chapters|\/schedule)(?:\/|$)/i.test(cleanPath)) {
+    return "public, s-maxage=1800, stale-while-revalidate=86400";
+  }
+
+  // Episode -> public, s-maxage=900, stale-while-revalidate=3600
+  if (/(?:\/episode|\/episodes?)(?:\/|$)/i.test(cleanPath)) {
+    return "public, s-maxage=900, stale-while-revalidate=3600";
+  }
+
+  // Search / Catalog / Genres -> public, s-maxage=600, stale-while-revalidate=3600
+  if (/(?:\/search|\/catalog|\/genres?)(?:\/|$)/i.test(cleanPath)) {
+    return "public, s-maxage=600, stale-while-revalidate=3600";
+  }
+
+  // Feed / Latest / Manhwa / Manhua / Popular / Trending -> public, s-maxage=300, stale-while-revalidate=1800
+  if (/(?:\/feed|\/latest|\/manhwa|\/manhua|\/popular|\/trending)(?:\/|$)/i.test(cleanPath)) {
+    return "public, s-maxage=300, stale-while-revalidate=1800";
+  }
+
+  return null;
+}
+
+export function jsonResponse(data, status = 200, extraHeaders = {}, pathname = "", isRefresh = false) {
+  const effectivePath = pathname || currentRequestContext.pathname;
+  const effectiveRefresh =
+    isRefresh ||
+    currentRequestContext.isRefresh ||
+    (typeof effectivePath === "string" && /[?&]refresh=1\b/i.test(effectivePath));
+
+  const headers = {
+    "Content-Type": "application/json; charset=UTF-8",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+  };
+
+  if (status === 200) {
+    const ch = cacheHeadersFor(effectivePath, effectiveRefresh);
+    if (ch) {
+      headers["Cache-Control"] = ch;
+    }
+  }
+
+  Object.assign(headers, extraHeaders);
+
+  if (effectiveRefresh && status === 200) {
+    headers["Cache-Control"] = "no-store";
+  }
+
   return new Response(JSON.stringify(data, null, 2), {
     status,
-    headers: {
-      "Content-Type": "application/json; charset=UTF-8",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-      ...extraHeaders,
-    },
+    headers,
   });
 }
 
@@ -2795,6 +2888,9 @@ export default async function handler(req) {
   const url = new URL(req.url);
   const path = url.pathname;
   const page = parseInt(url.searchParams.get("page") || "1", 10);
+  const isRefresh = url.searchParams.get("refresh") === "1" || url.searchParams.get("refresh") === "true";
+
+  currentRequestContext = { pathname: path, isRefresh };
 
   // Health / Root
   if (path === "/" || path === "/health") {
@@ -3035,7 +3131,7 @@ export default async function handler(req) {
 
       const cacheKey = `anime:detail:${providerName}:${slug}`;
       const cached = getCached(cacheKey);
-      if (cached && !url.searchParams.get("refresh")) return jsonResponse(cached);
+      if (cached && !isRefresh) return jsonResponse(cached);
 
       try {
         const data = await provider.getDetail(slug);
@@ -3043,9 +3139,7 @@ export default async function handler(req) {
         if (data && data.episodes && data.episodes.length > 0) {
           setCached(cacheKey, result, 1800);
         }
-        return jsonResponse(result, 200, {
-          "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400",
-        });
+        return jsonResponse(result);
       } catch (err) {
         return jsonResponse({ status: "error", message: err.message }, 502);
       }
@@ -3219,7 +3313,7 @@ export default async function handler(req) {
       const edgeRes = await fetch(edgeUrl.toString(), {
         headers: {
           "Accept": "application/json",
-          "User-Agent": request.headers.get("user-agent") || "DeiManga-Vercel-Edge",
+          "User-Agent": req.headers.get("user-agent") || "DeiManga-Vercel-Edge",
         },
       });
       const data = await edgeRes.json();
