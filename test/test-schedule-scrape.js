@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import handler from "../api/index.js";
 
 test("Airing Schedule: live scraping ongoing-anime produces valid ongoing items with 100% covers", async () => {
-  const req = new Request("https://deimanga-rest-api.vercel.app/api/anime/schedule?refresh=1");
+  const req = new Request("https://deimanga-rest-api.vercel.app/api/anime/schedule");
   const res = await handler(req);
   assert.equal(res.status, 200);
 

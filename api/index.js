@@ -6,6 +6,8 @@
 
 
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 export const config = {
   runtime: "edge",
   regions: ["sin1"],
@@ -14,7 +16,7 @@ export const config = {
 const memoryCache = new Map();
 export const inFlightHtml = new Map();
 export const htmlCache = new Map();
-let currentRequestContext = { pathname: "", isRefresh: false };
+export const requestContext = new AsyncLocalStorage();
 
 function getCached(key) {
   const entry = memoryCache.get(key);
@@ -246,10 +248,11 @@ export function cacheHeadersFor(pathname = "", isRefresh = false) {
 }
 
 export function jsonResponse(data, status = 200, extraHeaders = {}, pathname = "", isRefresh = false) {
-  const effectivePath = pathname || currentRequestContext.pathname;
+  const store = requestContext.getStore() || {};
+  const effectivePath = pathname || store.pathname || "";
   const effectiveRefresh =
     isRefresh ||
-    currentRequestContext.isRefresh ||
+    Boolean(store.isRefresh) ||
     (typeof effectivePath === "string" && /[?&]refresh=1\b/i.test(effectivePath));
 
   const headers = {
@@ -2887,10 +2890,13 @@ export default async function handler(req) {
 
   const url = new URL(req.url);
   const path = url.pathname;
-  const page = parseInt(url.searchParams.get("page") || "1", 10);
   const isRefresh = url.searchParams.get("refresh") === "1" || url.searchParams.get("refresh") === "true";
 
-  currentRequestContext = { pathname: path, isRefresh };
+  return requestContext.run({ pathname: path, isRefresh }, () => handleRequest(req, url, path, isRefresh));
+}
+
+async function handleRequest(req, url, path, isRefresh) {
+  const page = parseInt(url.searchParams.get("page") || "1", 10);
 
   // Health / Root
   if (path === "/" || path === "/health") {
